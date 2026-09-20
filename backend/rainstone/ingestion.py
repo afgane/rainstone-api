@@ -177,7 +177,7 @@ def ingest_fixture(session: Session, path: Path) -> dict[str, int | str]:
             session.add(invocation)
         invocation.owner_id = owner_ids[item["owner_source_id"]]
         invocation.parent_id = invocation_ids.get(item.get("parent_source_id"))
-        _set(invocation, item, ("workflow_name", "workflow_version", "state"))
+        _set(invocation, item, ("workflow_id", "workflow_name", "workflow_version", "state"))
         invocation.created_at = parse_time(item["created_at"])
         for membership in item["jobs"]:
             key = {

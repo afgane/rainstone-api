@@ -1,11 +1,29 @@
 import { expect, test } from "@playwright/test";
 
-test("packaged dashboard reports fixture costs and switches basis", async ({ page }) => {
-  await page.goto("/");
-  await expect(page.getByRole("heading", { name: "Understand what your work cost" })).toBeVisible();
-  await expect(page.getByText("Demo data")).toBeVisible();
-  await expect(page.getByText("Less than $0.01").first()).toBeVisible();
-  await page.getByLabel("Cost basis").selectOption("allocated");
-  await expect(page).toHaveURL(/basis=allocated/);
-  await expect(page.locator(".stat-card.featured").getByText("Allocated resource cost")).toBeVisible();
-});
+for (const target of [
+  { name: "root", url: process.env.BASE_URL || "http://localhost:8000" },
+  { name: "nested proxy prefix", url: process.env.PREFIX_URL || "http://localhost:8000" },
+]) {
+  test(`dashboard works at ${target.name}`, async ({ page }) => {
+    if (target.name === "nested proxy prefix") {
+      await page.setViewportSize({ width: 390, height: 844 });
+    }
+    await page.goto(target.url);
+    await expect(page.getByRole("heading", { name: "Overview" })).toBeVisible();
+    await expect(page.getByText(/Demo data/)).toBeVisible();
+    await page.getByRole("button", { name: "Jobs", exact: true }).click();
+    await expect(page).toHaveURL(/view=jobs/);
+    await page.getByPlaceholder("Search job, tool, owner, or workflow").fill("fastqc");
+    await expect(page).toHaveURL(/search=fastqc/);
+    await expect(page.getByText("3 with known amounts")).toBeVisible();
+    await page.reload();
+    await expect(page.getByPlaceholder("Search job, tool, owner, or workflow")).toHaveValue("fastqc");
+    await page.getByRole("button", { name: /#16/ }).click();
+    await expect(page.getByRole("dialog")).toContainText("Full job");
+    await page.keyboard.press("Escape");
+    await page.getByLabel("Cost basis").selectOption("allocated");
+    await expect(page).toHaveURL(/basis=allocated/);
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+    expect(overflow).toBeLessThanOrEqual(1);
+  });
+}

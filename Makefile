@@ -1,4 +1,4 @@
-.PHONY: dev dev-down dev-reset test test-unit test-integration e2e build migrate seed
+.PHONY: dev dev-down dev-reset test test-unit test-integration e2e build migrate seed benchmark
 
 COMPOSE := docker compose
 
@@ -38,3 +38,6 @@ migrate:
 
 seed:
 	$(COMPOSE) run --rm init rainstone ingest-fixtures --path fixtures/phase1.json
+
+benchmark:
+	$(COMPOSE) exec -T backend python scripts/benchmark_reporting.py --jobs 100000

@@ -87,12 +87,16 @@ class Invocation(Base):
     tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenant.id", ondelete="CASCADE"))
     owner_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("owner.id"))
     source_id: Mapped[str] = mapped_column(String(200))
+    workflow_id: Mapped[str | None] = mapped_column(String(300))
     parent_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("invocation.id"))
     workflow_name: Mapped[str] = mapped_column(String(300))
     workflow_version: Mapped[str | None] = mapped_column(String(100))
     state: Mapped[str] = mapped_column(String(40))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    __table_args__ = (UniqueConstraint("tenant_id", "source_id"),)
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "source_id"),
+        Index("ix_invocation_workflow_identity", "tenant_id", "workflow_id", "workflow_version"),
+    )
 
 
 class InvocationJob(Base):

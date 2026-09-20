@@ -1,15 +1,27 @@
 import uuid
-from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from rainstone.auth import Identity, current_identity
 from rainstone.db import get_session
-from rainstone.reporting import freshness, job_detail, list_invocations, list_jobs, summary
+from rainstone.report_query import ReportQuery, report_query
+from rainstone.reporting import (
+    daily,
+    export_csv,
+    freshness,
+    infrastructure,
+    invocation_detail,
+    invocations,
+    job_detail,
+    list_jobs,
+    summary,
+    tools,
+    users,
+)
 
 router = APIRouter(prefix="/api")
-Basis = Literal["additional", "allocated"]
 
 
 @router.get("/health")
@@ -19,57 +31,118 @@ def health() -> dict:
 
 @router.get("/me")
 def me(identity: Identity = Depends(current_identity)) -> dict:
-    return {"source_id": identity.source_id, "label": identity.label, "is_admin": identity.is_admin}
+    return {
+        "source_id": identity.source_id, "label": identity.label,
+        "is_admin": identity.is_admin,
+        "capabilities": {"infrastructure": identity.is_admin, "users": identity.is_admin},
+    }
 
 
 @router.get("/summary")
 def get_summary(
-    basis: Basis = "additional",
+    query: ReportQuery = Depends(report_query),
     session: Session = Depends(get_session),
     identity: Identity = Depends(current_identity),
 ) -> dict:
-    return summary(session, identity, basis)
+    return summary(session, identity, query)
 
 
 @router.get("/jobs")
 def get_jobs(
-    basis: Basis = "additional",
-    limit: int = Query(default=50, ge=1, le=200),
-    offset: int = Query(default=0, ge=0),
-    state: str | None = None,
-    runner: str | None = None,
-    search: str | None = Query(default=None, max_length=200),
+    query: ReportQuery = Depends(report_query),
     session: Session = Depends(get_session),
     identity: Identity = Depends(current_identity),
 ) -> dict:
-    return list_jobs(session, identity, basis, limit, offset, state, runner, search)
+    return list_jobs(session, identity, query)
 
 
 @router.get("/jobs/{job_id}")
 def get_job(
     job_id: uuid.UUID,
-    basis: Basis = "additional",
+    query: ReportQuery = Depends(report_query),
     session: Session = Depends(get_session),
     identity: Identity = Depends(current_identity),
 ) -> dict:
-    result = job_detail(session, identity, job_id, basis)
+    result = job_detail(session, identity, job_id, query)
     if result is None:
         raise HTTPException(404, "Job not found")
     return result
 
 
-@router.get("/invocations")
-def get_invocations(
-    basis: Basis = "additional",
+@router.get("/tools")
+def get_tools(
+    query: ReportQuery = Depends(report_query),
     session: Session = Depends(get_session),
     identity: Identity = Depends(current_identity),
-) -> list[dict]:
-    return list_invocations(session, identity, basis)
+) -> dict:
+    return tools(session, identity, query)
+
+
+@router.get("/invocations")
+def get_invocations(
+    query: ReportQuery = Depends(report_query),
+    session: Session = Depends(get_session),
+    identity: Identity = Depends(current_identity),
+) -> dict:
+    return invocations(session, identity, query)
+
+
+@router.get("/invocations/{invocation_id}")
+def get_invocation(
+    invocation_id: uuid.UUID,
+    query: ReportQuery = Depends(report_query),
+    session: Session = Depends(get_session),
+    identity: Identity = Depends(current_identity),
+) -> dict:
+    result = invocation_detail(session, identity, invocation_id, query)
+    if result is None:
+        raise HTTPException(404, "Invocation not found")
+    return result
+
+
+@router.get("/daily")
+def get_daily(
+    query: ReportQuery = Depends(report_query),
+    session: Session = Depends(get_session),
+    identity: Identity = Depends(current_identity),
+) -> dict:
+    return daily(session, identity, query)
+
+
+@router.get("/users")
+def get_users(
+    query: ReportQuery = Depends(report_query),
+    session: Session = Depends(get_session),
+    identity: Identity = Depends(current_identity),
+) -> dict:
+    return users(session, identity, query)
+
+
+@router.get("/infrastructure")
+def get_infrastructure(
+    query: ReportQuery = Depends(report_query),
+    session: Session = Depends(get_session),
+    identity: Identity = Depends(current_identity),
+) -> dict:
+    return infrastructure(session, identity, query)
+
+
+@router.get("/export/jobs.csv")
+def get_export(
+    query: ReportQuery = Depends(report_query),
+    session: Session = Depends(get_session),
+    identity: Identity = Depends(current_identity),
+) -> StreamingResponse:
+    return StreamingResponse(
+        export_csv(session, identity, query),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": "attachment; filename=rainstone-jobs.csv"},
+    )
 
 
 @router.get("/freshness")
 def get_freshness(
     session: Session = Depends(get_session),
     identity: Identity = Depends(current_identity),
-) -> list[dict]:
+) -> dict:
     return freshness(session, identity)

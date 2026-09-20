@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from rainstone.models import (
@@ -137,13 +137,23 @@ def calculate_tenant(
         .order_by(DeploymentPolicy.effective_from.desc())
     )
     for interval, attempt, job in rows:
-        price = session.scalar(
-            select(PriceVersion).where(
+        price_statement = select(PriceVersion).where(
                 PriceVersion.provider == interval.provider,
                 PriceVersion.region == interval.region,
                 PriceVersion.machine_type == interval.machine_type,
                 PriceVersion.purchase_model == interval.purchase_model,
+        )
+        if interval.observed_start is None:
+            price_statement = price_statement.where(PriceVersion.effective_from.is_(None))
+        else:
+            price_statement = price_statement.where(
+                or_(
+                    PriceVersion.effective_from.is_(None),
+                    PriceVersion.effective_from <= interval.observed_start,
+                )
             )
+        price = session.scalar(
+            price_statement.order_by(PriceVersion.effective_from.desc().nullslast()).limit(1)
         )
         for line in calculate_interval(interval, price):
             session.add(
