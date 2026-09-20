@@ -1,0 +1,142 @@
+name: rainstone-v2
+
+x-app-env: &app-env
+  RAINSTONE_DATABASE_URL: postgresql+psycopg://rainstone:rainstone@postgres:5432/rainstone
+  RAINSTONE_AUTH_MODE: development
+  RAINSTONE_DEMO_DATA: "true"
+
+services:
+  postgres:
+    image: postgres:17.6-alpine
+    environment:
+      POSTGRES_DB: rainstone
+      POSTGRES_USER: rainstone
+      POSTGRES_PASSWORD: rainstone
+    volumes:
+      - rainstone-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rainstone -d rainstone"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  init:
+    build:
+      context: .
+      target: backend-dev
+    environment: *app-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["sh", "-c", "alembic upgrade head && rainstone ingest-fixtures --path fixtures/phase1.json"]
+    volumes:
+      - ./backend:/app/backend
+      - ./alembic:/app/alembic
+      - ./alembic.ini:/app/alembic.ini
+      - ./fixtures:/app/fixtures:ro
+      - ./catalog:/app/catalog:ro
+    restart: "no"
+
+  backend:
+    build:
+      context: .
+      target: backend-dev
+    environment: *app-env
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    command: ["uvicorn", "rainstone.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload", "--reload-dir", "/app/backend"]
+    volumes:
+      - ./backend:/app/backend
+      - ./fixtures:/app/fixtures:ro
+      - ./catalog:/app/catalog:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  frontend:
+    build:
+      context: .
+      target: frontend-dev
+    environment:
+      VITE_API_TARGET: http://backend:8000
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:5173:5173"
+    volumes:
+      - ./frontend:/app/frontend
+      - frontend-node-modules:/app/frontend/node_modules
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:5173').then(r => { if (!r.ok) process.exit(1) })"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  test-postgres:
+    profiles: ["test", "e2e"]
+    image: postgres:17.6-alpine
+    environment:
+      POSTGRES_DB: rainstone_test
+      POSTGRES_USER: rainstone
+      POSTGRES_PASSWORD: rainstone
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rainstone -d rainstone_test"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+    tmpfs:
+      - /var/lib/postgresql/data
+
+  integration-tests:
+    profiles: ["test"]
+    build:
+      context: .
+      target: backend-dev
+    environment:
+      RAINSTONE_DATABASE_URL: postgresql+psycopg://rainstone:rainstone@test-postgres:5432/rainstone_test
+      RAINSTONE_AUTH_MODE: development
+      RAINSTONE_DEMO_DATA: "true"
+    depends_on:
+      test-postgres:
+        condition: service_healthy
+    command: ["sh", "-c", "alembic upgrade head && pytest backend/tests/integration"]
+
+  release:
+    profiles: ["e2e"]
+    build:
+      context: .
+      target: runtime
+    environment:
+      RAINSTONE_DATABASE_URL: postgresql+psycopg://rainstone:rainstone@test-postgres:5432/rainstone_test
+      RAINSTONE_AUTH_MODE: development
+      RAINSTONE_DEMO_DATA: "true"
+    depends_on:
+      test-postgres:
+        condition: service_healthy
+    command: ["sh", "-c", "alembic upgrade head && rainstone ingest-fixtures --path fixtures/phase1.json && uvicorn rainstone.main:app --host 0.0.0.0 --port 8000"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  e2e:
+    profiles: ["e2e"]
+    image: mcr.microsoft.com/playwright:v1.63.0-noble
+    working_dir: /work
+    environment:
+      BASE_URL: http://release:8000
+    volumes:
+      - ./frontend:/work
+    depends_on:
+      release:
+        condition: service_healthy
+    command: ["npm", "run", "e2e"]
+
+volumes:
+  rainstone-postgres:
+  frontend-node-modules:
