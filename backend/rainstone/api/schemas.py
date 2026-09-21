@@ -67,7 +67,8 @@ class JobItem(APIModel):
     currency: Literal["USD"]
     quality: str
     reason: str
-    attempt_cost_lines: int
+    cost_lines: int
+    attempt_count: int
     capacities: list[str]
     unattributed_amount: str
     temporally_unattributed: bool
@@ -87,6 +88,7 @@ class JobDetailResponse(JobItem):
     full_job_amount: str | None
     basis: str
     attempts: list[dict[str, Any]]
+    resources: list[dict[str, Any]]
     revision_id: str | None
     cost: dict[str, Any]
 
@@ -195,10 +197,38 @@ class InfrastructureResponse(APIModel):
 class FreshnessResponse(APIModel):
     sources: list[dict[str, Any]]
     overall_status: str
+    observation_gaps: list[dict[str, Any]]
 
 
 class MeResponse(APIModel):
     source_id: str
     label: str
     is_admin: bool
+    auth_mode: str
+    attribution: str
     capabilities: dict[str, bool]
+
+
+class StatusCheck(APIModel):
+    name: str
+    status: str
+    detail: str
+    facts: dict[str, Any]
+
+
+class StatusResponse(APIModel):
+    generated_at: str
+    overall_status: str
+    auth_mode: str
+    tenant: str
+    checks: list[StatusCheck]
+    failed_capabilities: list[str]
+
+
+class CatalogResponse(APIModel):
+    active_catalog_id: str | None
+    observed_at: str | None
+    imported_at: str | None
+    signature_key_id: str | None
+    provenance: dict[str, Any]
+    supported: list[dict[str, Any]]

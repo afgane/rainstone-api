@@ -1,10 +1,12 @@
+import json
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from sqlalchemy.orm import Session
 
 from rainstone.api.schemas import (
+    CatalogResponse,
     DailyResponse,
     FreshnessResponse,
     InfrastructureResponse,
@@ -13,12 +15,16 @@ from rainstone.api.schemas import (
     JobDetailResponse,
     JobListResponse,
     MeResponse,
+    StatusResponse,
     SummaryResponse,
     ToolListResponse,
     UserListResponse,
 )
 from rainstone.auth import Identity, current_identity
+from rainstone.catalog import coverage as catalog_coverage
+from rainstone.config import Settings, get_settings
 from rainstone.db import get_session
+from rainstone.doctor import run_checks
 from rainstone.report_query import ReportQuery, report_query
 from rainstone.reporting import (
     daily,
@@ -44,12 +50,56 @@ def health() -> dict:
 
 
 @router.get("/me", response_model=MeResponse)
-def me(identity: Identity = Depends(current_identity)) -> dict:
+def me(
+    identity: Identity = Depends(current_identity),
+    settings: Settings = Depends(get_settings),
+) -> dict:
     return {
         "source_id": identity.source_id, "label": identity.label,
         "is_admin": identity.is_admin,
-        "capabilities": {"infrastructure": identity.is_admin, "users": identity.is_admin},
+        "auth_mode": settings.auth_mode,
+        "attribution": identity.attribution,
+        "capabilities": {
+            "infrastructure": identity.can_view_infrastructure,
+            "users": identity.is_admin,
+        },
     }
+
+
+@router.get("/status", response_model=StatusResponse)
+def status(
+    session: Session = Depends(get_session),
+    identity: Identity = Depends(current_identity),
+    settings: Settings = Depends(get_settings),
+) -> dict:
+    """Sanitized operational diagnostics: no DSNs, secrets or raw job data."""
+    if not settings.diagnostics_enabled:
+        raise HTTPException(404, "Diagnostics are disabled for this deployment")
+    return run_checks(session, settings)
+
+
+@router.get("/status/download")
+def status_download(
+    session: Session = Depends(get_session),
+    identity: Identity = Depends(current_identity),
+    settings: Settings = Depends(get_settings),
+) -> Response:
+    if not settings.diagnostics_enabled:
+        raise HTTPException(404, "Diagnostics are disabled for this deployment")
+    payload = json.dumps(run_checks(session, settings), indent=2, sort_keys=True, default=str)
+    return Response(
+        payload,
+        media_type="application/json",
+        headers={"Content-Disposition": "attachment; filename=rainstone-diagnostics.json"},
+    )
+
+
+@router.get("/catalog", response_model=CatalogResponse)
+def catalog(
+    session: Session = Depends(get_session),
+    identity: Identity = Depends(current_identity),
+) -> dict:
+    return catalog_coverage(session)
 
 
 @router.get("/summary", response_model=SummaryResponse)

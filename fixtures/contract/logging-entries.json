@@ -1,0 +1,71 @@
+[
+  {
+    "timestamp": "2026-09-21T13:08:08.558920Z",
+    "protoPayload": {
+      "methodName": "v1.compute.instances.insert"
+    },
+    "operation": {
+      "id": "operation-insert-demo",
+      "producer": "compute.googleapis.com",
+      "first": true
+    },
+    "resource": {
+      "type": "gce_instance",
+      "labels": {
+        "instance_id": "8649021727128195799",
+        "zone": "us-east4-c"
+      }
+    }
+  },
+  {
+    "timestamp": "2026-09-21T13:08:16.012979Z",
+    "protoPayload": {
+      "methodName": "v1.compute.instances.insert"
+    },
+    "operation": {
+      "id": "operation-insert-demo",
+      "producer": "compute.googleapis.com",
+      "last": true
+    },
+    "resource": {
+      "type": "gce_instance",
+      "labels": {
+        "instance_id": "8649021727128195799"
+      }
+    }
+  },
+  {
+    "timestamp": "2026-09-21T13:17:22.399102Z",
+    "protoPayload": {
+      "methodName": "v1.compute.instances.delete"
+    },
+    "operation": {
+      "id": "operation-delete-demo",
+      "producer": "compute.googleapis.com",
+      "first": true
+    },
+    "resource": {
+      "type": "gce_instance",
+      "labels": {
+        "instance_id": "8649021727128195799"
+      }
+    }
+  },
+  {
+    "timestamp": "2026-09-21T13:17:47.329362Z",
+    "protoPayload": {
+      "methodName": "v1.compute.instances.delete"
+    },
+    "operation": {
+      "id": "operation-delete-demo",
+      "producer": "compute.googleapis.com",
+      "last": true
+    },
+    "resource": {
+      "type": "gce_instance",
+      "labels": {
+        "instance_id": "8649021727128195799"
+      }
+    }
+  }
+]

@@ -1,0 +1,106 @@
+# Operator-facing settings. Everything else is supplied by boot or defaulted.
+image:
+  repository: ghcr.io/galaxyproject/rainstone
+  tag: ""            # defaults to .Chart.AppVersion
+  pullPolicy: IfNotPresent
+
+# External path this deployment is served under, derived from the Galaxy prefix
+# (for example /galaxy/costs). The chart never creates an independent public
+# address: it registers a path on the existing ingress and a ClusterIP service.
+basePath: /galaxy/costs
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations: {}
+  host: ""
+
+service:
+  port: 8000
+
+# Identity. `anvil-workspace` reports one fixed tenant and shared Galaxy
+# account behind the platform's external admission boundary.
+auth:
+  mode: anvil-workspace
+  workspaceOwner: ""            # Galaxy account name or source ID, resolved by bootstrap
+  workspaceInfrastructureVisible: true
+
+instance:
+  slug: ""                      # stable instance identity supplied by boot
+  displayName: Galaxy deployment
+
+# Rainstone's own database: either an existing DSN Secret or the bundled
+# PostgreSQL deployment. Storage is retained on uninstall by default.
+database:
+  existingSecret: ""            # Secret with key `dsn`
+  existingSecretKey: dsn
+  deploy: true
+  image: postgres:17.6-alpine
+  storageClass: ""
+  size: 10Gi
+  retainOnDelete: true
+  name: rainstone
+  user: rainstone
+  passwordSecret: ""            # Secret with key `password`; generated when empty
+
+# Read-only Galaxy source credential provisioned by `rainstone bootstrap`.
+source:
+  dsnSecret: ""                 # Secret with key `dsn`
+  dsnSecretKey: dsn
+  statementTimeout: 30s
+  batchSize: 500
+  replayOverlapSeconds: 300
+
+collector:
+  enabled: true
+  kubernetes:
+    enabled: true
+    namespace: ""               # defaults to the release namespace
+  gcpBatch:
+    enabled: true
+    project: ""
+    location: ""
+    enrichCompute: true
+    enrichLogging: true
+  intervalSeconds: 30
+  batchRefreshSeconds: 30
+
+# Versioned baseline accounting policy for the existing Galaxy VM.
+baseline:
+  policyVersion: ""
+  resourceUid: ""
+  machineType: ""
+  region: ""
+  zone: ""
+  destinations: ""              # comma-separated Galaxy destination IDs
+  runners: local
+
+catalog:
+  feedUrl: ""                   # anonymous, versioned artifact feed
+  refreshSeconds: 21600
+  requireSignature: false
+
+retentionDays: 0                # 0 keeps all collected history
+
+diagnosticsEnabled: true
+
+web:
+  replicas: 1
+  resources:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits: {cpu: "1", memory: 1Gi}
+
+collectorResources:
+  requests: {cpu: 100m, memory: 256Mi}
+  limits: {cpu: "1", memory: 1Gi}
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}               # workload identity annotation for cloud reads
+
+# In-cluster restriction only: it reduces in-cluster callers and is not a
+# substitute for the platform's external admission boundary.
+networkPolicy:
+  enabled: false
+  ingressNamespace: ingress-nginx

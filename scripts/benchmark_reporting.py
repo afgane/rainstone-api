@@ -11,15 +11,18 @@ from decimal import Decimal
 from pathlib import Path
 
 from rainstone.auth import Identity
+from rainstone.costing import current_generation, report_fingerprint
 from rainstone.db import engine
 from rainstone.models import (
     CostLine,
     CostRevision,
     ExecutionAttempt,
     Job,
+    LifetimeAttempt,
     Owner,
     Quality,
-    ResourceInterval,
+    ResourceLifetime,
+    ResourceSegment,
     Tenant,
 )
 from rainstone.report_query import ReportQuery
@@ -28,6 +31,14 @@ from sqlalchemy import insert, select, text
 from sqlalchemy.orm import Session
 
 NS = uuid.UUID("547ec231-cf18-41f2-a76d-ae7c96146cbc")
+
+TRIGGERED_TABLES = (
+    "job",
+    "execution_attempt",
+    "resource_lifetime",
+    "resource_segment",
+    "lifetime_attempt",
+)
 
 
 def uid(kind: str, number: int) -> uuid.UUID:
@@ -41,20 +52,27 @@ def main() -> None:
     args = parser.parse_args()
     started = datetime.now(UTC)
     with Session(engine) as session:
+        # The report-generation triggers fire once per write statement. This
+        # benchmark measures report latency, not ingestion, so the synthetic
+        # corpus is loaded with them suspended inside the rolled-back
+        # transaction, and the revision's marker is set explicitly below.
+        for table in TRIGGERED_TABLES:
+            session.execute(text(f"ALTER TABLE {table} DISABLE TRIGGER USER"))
         tenant = session.scalar(select(Tenant).where(Tenant.slug == "anvil-demo"))
         owner = session.scalar(select(Owner).where(Owner.tenant_id == tenant.id, Owner.source_id == "admin"))
         revision_id = uuid.uuid4()
         session.add(CostRevision(
-            id=revision_id, tenant_id=tenant.id, calculation_version="phase2a-benchmark",
+            id=revision_id, tenant_id=tenant.id, calculation_version="phase2b-benchmark",
             input_digest=uuid.uuid4().hex * 2, reason="rolled-back benchmark", created_at=started,
         ))
         session.flush()
         batch_size = 2_000
         for base in range(0, args.jobs, batch_size):
             numbers = range(base, min(args.jobs, base + batch_size))
-            jobs, attempts, intervals, lines = [], [], [], []
+            jobs, attempts, lifetimes, segments, links, lines = [], [], [], [], [], []
             for number in numbers:
-                job_id, attempt_id, interval_id = uid("job", number), uid("attempt", number), uid("interval", number)
+                job_id, attempt_id = uid("job", number), uid("attempt", number)
+                lifetime_id, segment_id = uid("lifetime", number), uid("segment", number)
                 when = started - timedelta(seconds=number % 2_592_000)
                 jobs.append({
                     "id": job_id, "tenant_id": tenant.id, "owner_id": owner.id,
@@ -68,27 +86,48 @@ def main() -> None:
                     "parent_attempt_id": None, "runner": "gcp_batch", "external_id": f"bench-{number}",
                     "outcome": "ok", "tool_started_at": when, "tool_finished_at": when + timedelta(seconds=60),
                 })
-                intervals.append({
-                    "id": interval_id, "attempt_id": attempt_id, "source_interval_id": "interval-0",
-                    "resource_uid": f"bench-vm-{number}", "provider": "gcp", "region": "us-central1",
+                lifetimes.append({
+                    "id": lifetime_id, "tenant_id": tenant.id, "provider": "gcp",
+                    "resource_key": f"gce:benchmark/us-central1-a/{number}",
+                    "resource_uid": f"bench-vm-{number}", "project": "benchmark",
+                    "zone": "us-central1-a", "region": "us-central1",
                     "machine_type": "n2-standard-2", "purchase_model": "on_demand",
                     "capacity_relationship": "dedicated", "observed_start": when,
                     "observed_end": when + timedelta(seconds=60), "timing_method": "benchmark",
                     "requested_vcpu": Decimal("2"), "requested_memory_mib": Decimal("8192"), "facts": {},
                 })
+                segments.append({
+                    "id": segment_id, "lifetime_id": lifetime_id, "source_segment_id": "lifetime",
+                    "observed_start": when, "observed_end": when + timedelta(seconds=60),
+                    "timing_method": "benchmark", "facts": {},
+                })
+                links.append({
+                    "lifetime_id": lifetime_id, "attempt_id": attempt_id, "task_index": 0,
+                    "attempt_ordinal": 0, "correlation": "benchmark", "facts": {},
+                })
                 lines.append({
                     "id": uid("line", number), "revision_id": revision_id, "job_id": job_id,
-                    "attempt_id": attempt_id, "resource_interval_id": interval_id, "basis": "additional",
+                    "attempt_id": attempt_id, "lifetime_id": lifetime_id, "basis": "additional",
                     "component": "compute", "amount": Decimal("0.001618633333"), "currency": "USD",
                     "quality": Quality.complete, "reason": "Synthetic reporting benchmark.",
                     "price_version_id": None, "policy_id": None, "details": {},
                 })
             session.execute(insert(Job), jobs)
             session.execute(insert(ExecutionAttempt), attempts)
-            session.execute(insert(ResourceInterval), intervals)
+            session.execute(insert(ResourceLifetime), lifetimes)
+            session.execute(insert(ResourceSegment), segments)
+            session.execute(insert(LifetimeAttempt), links)
             session.execute(insert(CostLine), lines)
             session.flush()
-        identity = Identity(tenant.id, owner.id, owner.source_id, owner.label, True)
+        for table in TRIGGERED_TABLES:
+            session.execute(text(f"ALTER TABLE {table} ENABLE TRIGGER USER"))
+        revision = session.get(CostRevision, revision_id)
+        revision.input_digest = report_fingerprint(session, tenant.id)
+        revision.facts_generation = current_generation(session, tenant.id)
+        session.flush()
+        identity = Identity(
+            tenant.id, owner.id, owner.source_id, owner.label, True, can_view_infrastructure=True
+        )
         query = ReportQuery(search="benchmark/tool/3", runner="gcp_batch", limit=50, sort="amount")
         timings: dict[str, list[float]] = {"summary": [], "first_page": [], "deep_page": []}
         for _iteration in range(8):
@@ -102,13 +141,16 @@ def main() -> None:
                 timings[name].append((time.perf_counter() - before) * 1000)
         generation_seconds = (datetime.now(UTC) - started).total_seconds()
         rows = [
-            "# Rainstone Phase 2A reporting benchmark", "",
+            "# Rainstone reporting benchmark", "",
             f"- Generated jobs: {args.jobs:,} (transaction rolled back)",
             f"- Host: {platform.platform()} · {platform.machine()} · Python {platform.python_version()}",
             f"- PostgreSQL URL host: {engine.url.host}",
             f"- Corpus generation: {generation_seconds:.2f} s",
             "- Query: runner=gcp_batch, search=benchmark/tool/3 (10,000 matching jobs), amount sort",
-            "- Eight iterations; first is cold with respect to application objects, later runs are warm.", "",
+            "- Eight iterations; first is cold with respect to application objects, later runs are warm.",
+            "- The corpus is loaded with the report-generation triggers suspended inside the "
+            "rolled-back transaction: this measures report latency, not ingestion. Those triggers "
+            "add one small upsert per write statement, so bulk backfill favors batched writes.", "",
             "| Request | Cold | Warm p50 | Warm p95 | Maximum |",
             "| --- | ---: | ---: | ---: | ---: |",
         ]

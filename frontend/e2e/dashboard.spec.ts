@@ -32,6 +32,12 @@ for (const target of [
     await expect(page).toHaveURL(/tool_version=0.74%2Bgalaxy1/);
     await page.getByLabel("Cost basis").selectOption("allocated");
     await expect(page).toHaveURL(/basis=allocated/);
+    await page.getByRole("button", { name: "Status", exact: true }).click();
+    await expect(page).toHaveURL(/view=status/);
+    await expect(page.getByRole("heading", { name: "Deployment status" })).toBeVisible();
+    await expect(page.getByText(/identity mode/)).toBeVisible();
+    await expect(page.getByRole("link", { name: "Download diagnostics" })).toBeVisible();
+    await expect(page.getByRole("cell", { name: "migration_state" })).toBeVisible();
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
     expect(overflow).toBeLessThanOrEqual(1);
   });

@@ -8,12 +8,17 @@ The initial page size is 50 and the maximum is 200. A unique internal job ID
 breaks sort ties, and missing costs sort after known values in both directions.
 
 The summary request chooses a calculation revision. The browser pins that
-revision into every table, chart, detail, and export request and serializes it in
-the URL. Each revision fingerprints tenant, owner, job, attempt, resource,
-policy, price, workflow membership, and infrastructure facts. A revision that
-is no longer current or whose facts changed returns a conflict instead of
-joining its cost lines to newer mutable observations. Report requests use a
-repeatable-read database snapshot so validation and aggregation see one state.
+revision into every table, chart, detail, and export request and serializes it
+in the URL. A revision records the tenant's report-generation marker, which
+database triggers advance whenever tenant, owner, job, attempt, resource
+lifetime, segment, association, policy, price, workflow membership, or
+infrastructure facts change, including through a write that bypasses the
+application. A revision that is no longer current, or whose marker has moved,
+returns a conflict instead of joining its cost lines to newer mutable
+observations. Revisions also record a content digest, so replaying identical
+facts reuses the existing revision rather than creating another. Report
+requests use a repeatable-read database snapshot so validation and aggregation
+see one state.
 
 The default accrued mode clips each observed resource interval to the selected
 half-open range. A resource lifetime is split at catalog price boundaries. A
@@ -46,3 +51,22 @@ exports read database-sortable reports in bounded 500-job batches, stream the
 complete authorized filtered result, and neutralize cells that spreadsheet
 software could interpret as formulas. Cost-sorted exports retain the in-memory
 compatibility path because their ordering depends on calculated report amounts.
+
+## Resource lifetimes in reports (Phase 2B)
+
+Cost lines are keyed by chargeable resource lifetime and attributed job, not by
+attempt. A job detail therefore reports two lists: `resources`, each with its
+amount, shape, observed window, timing method and the attempts that shared it;
+and `attempts`, each with Galaxy outcome, provider outcome, exit code, task
+index and attempt ordinal. An attempt shows an amount only when it is the sole
+user of that lifetime; otherwise the row names the attempts sharing the charge
+so no report repeats a whole-VM amount. `cost_lines` counts charged lifetimes
+and `attempt_count` counts observed attempts; they differ for a same-VM retry.
+
+Raw job metrics are not part of the revision content digest: they reach reports
+only through attempts, lifetimes and job resource hints, which are covered.
+
+Collector health is reported separately from web health: `/api/freshness`
+carries per-source status, cursors, lag and recorded observation gaps, and
+`/api/status` carries the same read-only self-checks as `rainstone doctor`,
+sanitized for download through the normal authenticated route.

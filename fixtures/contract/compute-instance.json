@@ -1,0 +1,16 @@
+{
+  "id": "8649021727128195799",
+  "name": "galaxy-batch-demo-vm",
+  "zone": "https://www.googleapis.com/compute/v1/projects/demo-project/zones/us-east4-c",
+  "machineType": "https://www.googleapis.com/compute/v1/projects/demo-project/zones/us-east4-c/machineTypes/n2-standard-8",
+  "creationTimestamp": "2026-09-21T13:08:08.558920Z",
+  "lastStartTimestamp": "2026-09-21T13:08:16.012979Z",
+  "lastStopTimestamp": null,
+  "labels": {
+    "batch-job-uid": "galaxy-batch-demo-336-uid"
+  },
+  "scheduling": {
+    "provisioningModel": "STANDARD",
+    "preemptible": false
+  }
+}

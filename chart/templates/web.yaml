@@ -1,0 +1,65 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "rainstone.fullname" . }}-web
+  labels: {{- include "rainstone.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.web.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "rainstone.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: web
+  template:
+    metadata:
+      labels:
+        {{- include "rainstone.labels" . | nindent 8 }}
+        app.kubernetes.io/component: web
+    spec:
+      serviceAccountName: {{ include "rainstone.serviceAccountName" . }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+      containers:
+        - name: web
+          image: {{ include "rainstone.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - uvicorn
+            - rainstone.main:app
+            - --host
+            - 0.0.0.0
+            - --port
+            - "8000"
+          # The web process serves reports only: it holds no Galaxy source
+          # credential and no cloud observation permissions.
+          env: {{- include "rainstone.env" . | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: 8000
+          readinessProbe:
+            httpGet: {path: /api/health, port: http}
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /api/health, port: http}
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources: {{- toYaml .Values.web.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "rainstone.fullname" . }}
+  labels: {{- include "rainstone.labels" . | nindent 4 }}
+spec:
+  # ClusterIP only: no NodePort, LoadBalancer or independent public address.
+  type: ClusterIP
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: {{ include "rainstone.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: web

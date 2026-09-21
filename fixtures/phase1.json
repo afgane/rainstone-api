@@ -1,120 +1,1020 @@
 {
-  "schema_version": 1,
-  "fixture_id": "phase2a-reporting-2026-09-20-v1",
+  "schema_version": 2,
+  "fixture_id": "phase2b-reporting-2026-09-21-v1",
   "observed_at": "2026-09-19T13:40:00Z",
   "tenant": {
     "slug": "anvil-demo",
     "display_name": "AnVIL demonstration",
     "source_version": "Galaxy 26.1 / 2.dev0",
     "base_url": "https://example.invalid/galaxy",
-    "capabilities": {"galaxy_db": true, "kubernetes": true, "gcp_batch": true, "fixture": true, "demo": true, "synthetic_phase2_scenarios": true}
+    "capabilities": {
+      "galaxy_db": true,
+      "kubernetes": true,
+      "gcp_batch": true,
+      "fixture": true,
+      "demo": true,
+      "synthetic_phase2_scenarios": true
+    }
   },
   "owners": [
-    {"source_id": "alice", "label": "Alice Researcher", "is_admin": false},
-    {"source_id": "bob", "label": "Bob Researcher", "is_admin": false},
-    {"source_id": "admin", "label": "Demo Administrator", "is_admin": true}
+    {
+      "source_id": "alice",
+      "label": "Alice Researcher",
+      "is_admin": false
+    },
+    {
+      "source_id": "bob",
+      "label": "Bob Researcher",
+      "is_admin": false
+    },
+    {
+      "source_id": "admin",
+      "label": "Demo Administrator",
+      "is_admin": true
+    }
   ],
-  "policies": [{
-    "version": "anvil-baseline-v1",
-    "effective_from": "2026-09-19T00:00:00Z",
-    "effective_to": null,
-    "baseline_resource_ids": ["baseline-vm-demo"],
-    "assumptions": {"unchanged_vm_size": true, "unchanged_vm_uptime": true, "default_basis": "additional"},
-    "evidence": "Sanitized Phase 0 observation: local and Kubernetes work used the existing t2d-standard-4 Galaxy VM."
-  }],
+  "policies": [
+    {
+      "version": "anvil-baseline-v1",
+      "effective_from": "2026-09-19T00:00:00Z",
+      "effective_to": null,
+      "baseline_resource_ids": [
+        "baseline-vm-demo"
+      ],
+      "assumptions": {
+        "unchanged_vm_size": true,
+        "unchanged_vm_uptime": true,
+        "default_basis": "additional"
+      },
+      "evidence": "Sanitized Phase 0 observation: local and Kubernetes work used the existing t2d-standard-4 Galaxy VM."
+    }
+  ],
   "prices": [
-    {"catalog_id": "gcp-official-page-us-central1-2026-09-19", "machine_type": "t2d-standard-4", "provider": "gcp", "region": "us-central1", "purchase_model": "on_demand", "currency": "USD", "hourly_rate": "0.168984", "observed_at": "2026-09-19T13:32:03Z", "effective_from": null, "provenance": {"kind": "official_pricing_page", "historical_effective_time_available": false}},
-    {"catalog_id": "gcp-official-page-us-central1-2026-09-19", "machine_type": "n2-standard-2", "provider": "gcp", "region": "us-central1", "purchase_model": "on_demand", "currency": "USD", "hourly_rate": "0.097118", "observed_at": "2026-09-19T13:32:03Z", "effective_from": null, "provenance": {"kind": "official_pricing_page", "historical_effective_time_available": false}},
-    {"catalog_id": "gcp-official-page-us-central1-2026-09-19", "machine_type": "n2-highmem-4", "provider": "gcp", "region": "us-central1", "purchase_model": "on_demand", "currency": "USD", "hourly_rate": "0.262028", "observed_at": "2026-09-19T13:32:03Z", "effective_from": null, "provenance": {"kind": "official_pricing_page", "historical_effective_time_available": false}},
-    {"catalog_id": "synthetic-price-change-2026-09-20", "machine_type": "n2-standard-2", "provider": "gcp", "region": "us-central1", "purchase_model": "on_demand", "currency": "USD", "hourly_rate": "0.100000", "observed_at": "2026-09-20T00:00:00Z", "effective_from": "2026-09-20T00:00:00Z", "provenance": {"kind": "synthetic_acceptance_fixture", "synthetic": true}}
+    {
+      "catalog_id": "gcp-official-page-us-central1-2026-09-19",
+      "machine_type": "t2d-standard-4",
+      "provider": "gcp",
+      "region": "us-central1",
+      "purchase_model": "on_demand",
+      "currency": "USD",
+      "hourly_rate": "0.168984",
+      "observed_at": "2026-09-19T13:32:03Z",
+      "effective_from": null,
+      "provenance": {
+        "kind": "official_pricing_page",
+        "historical_effective_time_available": false
+      }
+    },
+    {
+      "catalog_id": "gcp-official-page-us-central1-2026-09-19",
+      "machine_type": "n2-standard-2",
+      "provider": "gcp",
+      "region": "us-central1",
+      "purchase_model": "on_demand",
+      "currency": "USD",
+      "hourly_rate": "0.097118",
+      "observed_at": "2026-09-19T13:32:03Z",
+      "effective_from": null,
+      "provenance": {
+        "kind": "official_pricing_page",
+        "historical_effective_time_available": false
+      }
+    },
+    {
+      "catalog_id": "gcp-official-page-us-central1-2026-09-19",
+      "machine_type": "n2-highmem-4",
+      "provider": "gcp",
+      "region": "us-central1",
+      "purchase_model": "on_demand",
+      "currency": "USD",
+      "hourly_rate": "0.262028",
+      "observed_at": "2026-09-19T13:32:03Z",
+      "effective_from": null,
+      "provenance": {
+        "kind": "official_pricing_page",
+        "historical_effective_time_available": false
+      }
+    },
+    {
+      "catalog_id": "synthetic-price-change-2026-09-20",
+      "machine_type": "n2-standard-2",
+      "provider": "gcp",
+      "region": "us-central1",
+      "purchase_model": "on_demand",
+      "currency": "USD",
+      "hourly_rate": "0.100000",
+      "observed_at": "2026-09-20T00:00:00Z",
+      "effective_from": "2026-09-20T00:00:00Z",
+      "provenance": {
+        "kind": "synthetic_acceptance_fixture",
+        "synthetic": true
+      }
+    }
   ],
   "jobs": [
     {
-      "source_id": "9", "owner_source_id": "alice", "tool_id": "toolshed.g2.bx.psu.edu/repos/iuc/goseq/goseq/2.0.1", "tool_version": "2.0.1", "state": "ok", "runner": "kubernetes", "destination": "k8s", "created_at": "2026-09-19T13:28:00Z", "updated_at": "2026-09-19T13:30:00Z", "copied_from_source_id": null,
-      "attempts": [{"source_attempt_id": "galaxy-0", "runner": "kubernetes", "external_id": "gxy-demo-9", "outcome": "ok", "tool_started_at": "2026-09-19T13:29:20Z", "tool_finished_at": "2026-09-19T13:29:35Z", "resource_intervals": [{"source_interval_id": "pod-demo-9", "resource_uid": "baseline-vm-demo", "provider": "gcp", "region": "us-central1", "machine_type": "t2d-standard-4", "purchase_model": "on_demand", "capacity_relationship": "existing", "observed_start": "2026-09-19T13:28:40Z", "observed_end": "2026-09-19T13:29:36Z", "timing_method": "kubernetes_pod_occupancy", "requested_vcpu": 1, "requested_memory_mib": 3891.2, "facts": {"isolation": "pod_request"}}]}]
-    },
-    {
-      "source_id": "10", "owner_source_id": "alice", "tool_id": "toolshed.g2.bx.psu.edu/repos/iuc/goseq/goseq/2.0.1", "tool_version": "2.0.1", "state": "ok", "runner": "kubernetes", "destination": "k8s", "created_at": "2026-09-19T13:28:03Z", "updated_at": "2026-09-19T13:30:30Z", "copied_from_source_id": null,
-      "attempts": [{"source_attempt_id": "galaxy-0", "runner": "kubernetes", "external_id": "gxy-demo-10", "outcome": "ok", "tool_started_at": "2026-09-19T13:29:40Z", "tool_finished_at": "2026-09-19T13:29:56Z", "resource_intervals": [{"source_interval_id": "pod-demo-10", "resource_uid": "baseline-vm-demo", "provider": "gcp", "region": "us-central1", "machine_type": "t2d-standard-4", "purchase_model": "on_demand", "capacity_relationship": "existing", "observed_start": "2026-09-19T13:29:36Z", "observed_end": "2026-09-19T13:29:57Z", "timing_method": "kubernetes_pod_occupancy", "requested_vcpu": 1, "requested_memory_mib": 3891.2, "facts": {"isolation": "pod_request"}}]}]
-    },
-    {
-      "source_id": "11", "owner_source_id": "alice", "tool_id": "toolshed.g2.bx.psu.edu/repos/iuc/goseq/goseq/2.0.1", "tool_version": "2.0.1", "state": "ok", "runner": "kubernetes", "destination": "k8s", "created_at": "2026-09-19T13:28:05Z", "updated_at": "2026-09-19T13:31:00Z", "copied_from_source_id": null,
-      "attempts": [{"source_attempt_id": "galaxy-0", "runner": "kubernetes", "external_id": "gxy-demo-11", "outcome": "ok", "tool_started_at": "2026-09-19T13:30:00Z", "tool_finished_at": "2026-09-19T13:30:15Z", "resource_intervals": [{"source_interval_id": "pod-demo-11", "resource_uid": "baseline-vm-demo", "provider": "gcp", "region": "us-central1", "machine_type": "t2d-standard-4", "purchase_model": "on_demand", "capacity_relationship": "existing", "observed_start": "2026-09-19T13:29:57Z", "observed_end": "2026-09-19T13:30:16Z", "timing_method": "kubernetes_pod_occupancy", "requested_vcpu": 1, "requested_memory_mib": 3891.2, "facts": {"isolation": "pod_request"}}]}]
-    },
-    {
-      "source_id": "12", "owner_source_id": "alice", "tool_id": "toolshed.g2.bx.psu.edu/repos/iuc/goseq/goseq/2.0.1", "tool_version": "2.0.1", "state": "ok", "runner": "kubernetes", "destination": "k8s", "created_at": "2026-09-19T13:28:06Z", "updated_at": "2026-09-19T13:31:20Z", "copied_from_source_id": null,
-      "attempts": [{"source_attempt_id": "galaxy-0", "runner": "kubernetes", "external_id": "gxy-demo-12", "outcome": "ok", "tool_started_at": "2026-09-19T13:30:19Z", "tool_finished_at": "2026-09-19T13:30:34Z", "resource_intervals": [{"source_interval_id": "pod-demo-12", "resource_uid": "baseline-vm-demo", "provider": "gcp", "region": "us-central1", "machine_type": "t2d-standard-4", "purchase_model": "on_demand", "capacity_relationship": "existing", "observed_start": "2026-09-19T13:30:16Z", "observed_end": "2026-09-19T13:30:35Z", "timing_method": "kubernetes_pod_occupancy", "requested_vcpu": 1, "requested_memory_mib": 3891.2, "facts": {"isolation": "pod_request"}}]}]
-    },
-    {
-      "source_id": "13", "owner_source_id": "alice", "tool_id": "toolshed.g2.bx.psu.edu/repos/bgruening/text_processing/tp_join_tool/0.1.1", "tool_version": "0.1.1", "state": "ok", "runner": "gcp_batch", "destination": "batch-jobs", "created_at": "2026-09-19T13:30:40Z", "updated_at": "2026-09-19T13:32:36Z", "copied_from_source_id": null,
-      "attempts": [{"source_attempt_id": "batch-task-0-attempt-0", "runner": "gcp_batch", "external_id": "demo-join", "outcome": "ok", "tool_started_at": "2026-09-19T13:31:50Z", "tool_finished_at": "2026-09-19T13:31:51Z", "resource_intervals": [{"source_interval_id": "vm-proxy-3081", "resource_uid": "batch-vm-demo-join", "provider": "gcp", "region": "us-central1", "machine_type": "n2-highmem-4", "purchase_model": "on_demand", "capacity_relationship": "dedicated", "observed_start": "2026-09-19T13:31:11.797060Z", "observed_end": "2026-09-19T13:32:35.753323Z", "timing_method": "compute_insert_complete_to_delete_request", "requested_vcpu": 1, "requested_memory_mib": 18432, "facts": {"actual_vcpu": 4, "actual_memory_mib": 32768, "disk_excluded": true}}]}]
-    },
-    {
-      "source_id": "16", "owner_source_id": "alice", "tool_id": "toolshed.g2.bx.psu.edu/repos/devteam/fastqc/fastqc/0.74+galaxy1", "tool_version": "0.74+galaxy1", "state": "ok", "runner": "gcp_batch", "destination": "batch-jobs", "created_at": "2026-09-19T13:29:50Z", "updated_at": "2026-09-19T13:32:24Z", "copied_from_source_id": null,
-      "attempts": [{"source_attempt_id": "batch-task-0-attempt-0", "runner": "gcp_batch", "external_id": "demo-fastqc-a", "outcome": "ok", "tool_started_at": "2026-09-19T13:31:28Z", "tool_finished_at": "2026-09-19T13:31:32Z", "resource_intervals": [{"source_interval_id": "vm-proxy-8108", "resource_uid": "batch-vm-demo-fastqc-a", "provider": "gcp", "region": "us-central1", "machine_type": "n2-standard-2", "purchase_model": "on_demand", "capacity_relationship": "dedicated", "observed_start": "2026-09-19T13:30:33.757644Z", "observed_end": "2026-09-19T13:32:23.804482Z", "timing_method": "compute_insert_complete_to_delete_request", "requested_vcpu": 1, "requested_memory_mib": 5734, "facts": {"actual_vcpu": 2, "actual_memory_mib": 8192, "disk_excluded": true}}]}]
-    },
-    {
-      "source_id": "18", "owner_source_id": "bob", "tool_id": "toolshed.g2.bx.psu.edu/repos/devteam/fastqc/fastqc/0.74+galaxy1", "tool_version": "0.74+galaxy1", "state": "ok", "runner": "gcp_batch", "destination": "batch-jobs", "created_at": "2026-09-19T13:30:55Z", "updated_at": "2026-09-19T13:33:19Z", "copied_from_source_id": null,
-      "attempts": [{"source_attempt_id": "batch-task-0-attempt-0", "runner": "gcp_batch", "external_id": "demo-fastqc-b", "outcome": "ok", "tool_started_at": "2026-09-19T13:32:08Z", "tool_finished_at": "2026-09-19T13:32:13Z", "resource_intervals": [{"source_interval_id": "vm-proxy-4119", "resource_uid": "batch-vm-demo-fastqc-b", "provider": "gcp", "region": "us-central1", "machine_type": "n2-standard-2", "purchase_model": "on_demand", "capacity_relationship": "dedicated", "observed_start": "2026-09-19T13:31:30.434451Z", "observed_end": "2026-09-19T13:33:18.152988Z", "timing_method": "compute_insert_complete_to_delete_request", "requested_vcpu": 1, "requested_memory_mib": 5734, "facts": {"actual_vcpu": 2, "actual_memory_mib": 8192, "disk_excluded": true}}]}]
-    },
-    {
-      "source_id": "19", "owner_source_id": "alice", "tool_id": "cat1", "tool_version": "1.0.2", "state": "ok", "runner": "kubernetes", "destination": "k8s", "created_at": "2026-09-19T13:35:00Z", "updated_at": "2026-09-19T13:35:05Z", "copied_from_source_id": null,
-      "attempts": [{"source_attempt_id": "galaxy-0", "runner": "kubernetes", "external_id": "gxy-demo-19", "outcome": "ok", "tool_started_at": "2026-09-19T13:35:02Z", "tool_finished_at": "2026-09-19T13:35:02Z", "resource_intervals": [{"source_interval_id": "pod-demo-19", "resource_uid": "baseline-vm-demo", "provider": "gcp", "region": "us-central1", "machine_type": "t2d-standard-4", "purchase_model": "on_demand", "capacity_relationship": "existing", "observed_start": "2026-09-19T13:35:01Z", "observed_end": "2026-09-19T13:35:03Z", "timing_method": "kubernetes_pod_occupancy", "requested_vcpu": 1, "requested_memory_mib": 1024, "facts": {"duration_resolution_warning": true}}]}]
-    },
-    {
-      "source_id": "20", "owner_source_id": "alice", "tool_id": "cat1", "tool_version": "1.0.2", "state": "ok", "runner": "kubernetes", "destination": "k8s", "created_at": "2026-09-19T13:35:00Z", "updated_at": "2026-09-19T13:35:06Z", "copied_from_source_id": null,
-      "attempts": [{"source_attempt_id": "galaxy-0", "runner": "kubernetes", "external_id": "gxy-demo-20", "outcome": "ok", "tool_started_at": "2026-09-19T13:35:03Z", "tool_finished_at": "2026-09-19T13:35:03Z", "resource_intervals": [{"source_interval_id": "pod-demo-20", "resource_uid": "baseline-vm-demo", "provider": "gcp", "region": "us-central1", "machine_type": "t2d-standard-4", "purchase_model": "on_demand", "capacity_relationship": "existing", "observed_start": "2026-09-19T13:35:02Z", "observed_end": "2026-09-19T13:35:04Z", "timing_method": "kubernetes_pod_occupancy", "requested_vcpu": 1, "requested_memory_mib": 1024, "facts": {"duration_resolution_warning": true}}]}]
-    },
-    {
-      "source_id": "21", "owner_source_id": "bob", "tool_id": "toolshed.example.org/repos/demo/unsupported/unsupported/1.0", "tool_version": "1.0", "state": "error", "runner": "unknown", "destination": "legacy", "created_at": "2026-09-19T13:36:00Z", "updated_at": "2026-09-19T13:36:30Z", "copied_from_source_id": null,
-      "attempts": [{"source_attempt_id": "galaxy-0", "runner": "unknown", "external_id": null, "outcome": "error", "tool_started_at": null, "tool_finished_at": null, "resource_intervals": [{"source_interval_id": "historical-fallback", "resource_uid": "unknown", "provider": "gcp", "region": "us-central1", "machine_type": null, "purchase_model": null, "capacity_relationship": "unknown", "observed_start": null, "observed_end": null, "timing_method": "galaxy_record_only", "requested_vcpu": null, "requested_memory_mib": null, "facts": {"missing": ["resource_identity", "lifetime", "machine_type"]}}]}]
-    },
-    {
-      "source_id": "22", "owner_source_id": "alice", "tool_id": "toolshed.example.org/repos/demo/retried/retried/1.0", "tool_version": "1.0", "state": "ok", "runner": "gcp_batch", "destination": "batch-jobs", "created_at": "2026-09-19T13:37:00Z", "updated_at": "2026-09-19T13:39:00Z", "copied_from_source_id": null,
+      "source_id": "9",
+      "owner_source_id": "alice",
+      "tool_id": "toolshed.g2.bx.psu.edu/repos/iuc/goseq/goseq/2.0.1",
+      "tool_version": "2.0.1",
+      "state": "ok",
+      "runner": "kubernetes",
+      "destination": "k8s",
+      "created_at": "2026-09-19T13:28:00Z",
+      "updated_at": "2026-09-19T13:30:00Z",
+      "copied_from_source_id": null,
       "attempts": [
-        {"source_attempt_id": "galaxy-0", "runner": "kubernetes", "external_id": "gxy-demo-22-first", "outcome": "error", "tool_started_at": "2026-09-19T13:37:10Z", "tool_finished_at": "2026-09-19T13:37:20Z", "resource_intervals": [{"source_interval_id": "pod-demo-22-first", "resource_uid": "baseline-vm-demo", "provider": "gcp", "region": "us-central1", "machine_type": "t2d-standard-4", "purchase_model": "on_demand", "capacity_relationship": "existing", "observed_start": "2026-09-19T13:37:05Z", "observed_end": "2026-09-19T13:37:21Z", "timing_method": "kubernetes_pod_occupancy", "requested_vcpu": 1, "requested_memory_mib": 1024, "facts": {"resubmitted": true}}]},
-        {"source_attempt_id": "galaxy-1-batch-task-0", "runner": "gcp_batch", "external_id": "demo-retry-success", "outcome": "ok", "tool_started_at": "2026-09-19T13:38:10Z", "tool_finished_at": "2026-09-19T13:38:20Z", "resource_intervals": [{"source_interval_id": "vm-proxy-retry", "resource_uid": "batch-vm-demo-retry", "provider": "gcp", "region": "us-central1", "machine_type": "n2-standard-2", "purchase_model": "on_demand", "capacity_relationship": "dedicated", "observed_start": "2026-09-19T13:37:50Z", "observed_end": "2026-09-19T13:38:50Z", "timing_method": "compute_insert_complete_to_delete_request", "requested_vcpu": 1, "requested_memory_mib": 2048, "facts": {"resubmission_of": "galaxy-0", "actual_vcpu": 2, "actual_memory_mib": 8192}}]}
+        {
+          "source_attempt_id": "galaxy-0",
+          "runner": "kubernetes",
+          "external_id": "gxy-demo-9",
+          "outcome": "ok",
+          "tool_started_at": "2026-09-19T13:29:20Z",
+          "tool_finished_at": "2026-09-19T13:29:35Z",
+          "lifetimes": [
+            {
+              "resource_uid": "baseline-vm-demo",
+              "provider": "gcp",
+              "region": "us-central1",
+              "machine_type": "t2d-standard-4",
+              "purchase_model": "on_demand",
+              "capacity_relationship": "existing",
+              "observed_start": "2026-09-19T13:28:40Z",
+              "observed_end": "2026-09-19T13:29:36Z",
+              "timing_method": "kubernetes_pod_occupancy",
+              "requested_vcpu": 1,
+              "requested_memory_mib": 3891.2,
+              "facts": {
+                "isolation": "pod_request"
+              },
+              "resource_key": "pod-demo-9"
+            }
+          ]
+        }
       ]
     },
     {
-      "source_id": "23", "owner_source_id": "alice", "tool_id": "toolshed.example.org/repos/demo/time-boundary/time-boundary/1.0", "tool_version": "1.0", "state": "ok", "runner": "gcp_batch", "destination": "batch-jobs", "created_at": "2026-03-08T06:54:00Z", "updated_at": "2026-03-08T07:06:00Z", "copied_from_source_id": null,
-      "attempts": [{"source_attempt_id": "synthetic-dst", "runner": "gcp_batch", "external_id": "synthetic-dst-boundary", "outcome": "ok", "tool_started_at": "2026-03-08T06:55:10Z", "tool_finished_at": "2026-03-08T07:04:50Z", "resource_intervals": [{"source_interval_id": "synthetic-dst-interval", "resource_uid": "synthetic-dst-vm", "provider": "gcp", "region": "us-central1", "machine_type": "n2-standard-2", "purchase_model": "on_demand", "capacity_relationship": "dedicated", "observed_start": "2026-03-08T06:55:00Z", "observed_end": "2026-03-08T07:05:00Z", "timing_method": "synthetic_acceptance_fixture", "requested_vcpu": 2, "requested_memory_mib": 8192, "facts": {"synthetic": true, "scenario": "America/New_York DST boundary"}}]}]
+      "source_id": "10",
+      "owner_source_id": "alice",
+      "tool_id": "toolshed.g2.bx.psu.edu/repos/iuc/goseq/goseq/2.0.1",
+      "tool_version": "2.0.1",
+      "state": "ok",
+      "runner": "kubernetes",
+      "destination": "k8s",
+      "created_at": "2026-09-19T13:28:03Z",
+      "updated_at": "2026-09-19T13:30:30Z",
+      "copied_from_source_id": null,
+      "attempts": [
+        {
+          "source_attempt_id": "galaxy-0",
+          "runner": "kubernetes",
+          "external_id": "gxy-demo-10",
+          "outcome": "ok",
+          "tool_started_at": "2026-09-19T13:29:40Z",
+          "tool_finished_at": "2026-09-19T13:29:56Z",
+          "lifetimes": [
+            {
+              "resource_uid": "baseline-vm-demo",
+              "provider": "gcp",
+              "region": "us-central1",
+              "machine_type": "t2d-standard-4",
+              "purchase_model": "on_demand",
+              "capacity_relationship": "existing",
+              "observed_start": "2026-09-19T13:29:36Z",
+              "observed_end": "2026-09-19T13:29:57Z",
+              "timing_method": "kubernetes_pod_occupancy",
+              "requested_vcpu": 1,
+              "requested_memory_mib": 3891.2,
+              "facts": {
+                "isolation": "pod_request"
+              },
+              "resource_key": "pod-demo-10"
+            }
+          ]
+        }
+      ]
     },
     {
-      "source_id": "24", "owner_source_id": "alice", "tool_id": "toolshed.example.org/repos/demo/running/running/1.0", "tool_version": "1.0", "state": "running", "runner": "gcp_batch", "destination": "batch-jobs", "created_at": "2026-09-19T13:39:30Z", "updated_at": "2026-09-19T13:40:00Z", "copied_from_source_id": null,
-      "attempts": [{"source_attempt_id": "synthetic-running", "runner": "gcp_batch", "external_id": "synthetic-running-vm", "outcome": "running", "tool_started_at": "2026-09-19T13:39:45Z", "tool_finished_at": null, "resource_intervals": [{"source_interval_id": "synthetic-open-interval", "resource_uid": "synthetic-running-vm", "provider": "gcp", "region": "us-central1", "machine_type": "n2-standard-2", "purchase_model": "on_demand", "capacity_relationship": "dedicated", "observed_start": "2026-09-19T13:39:40Z", "observed_end": null, "timing_method": "synthetic_acceptance_fixture", "requested_vcpu": 2, "requested_memory_mib": 8192, "facts": {"synthetic": true, "scenario": "in-progress work"}}]}]
+      "source_id": "11",
+      "owner_source_id": "alice",
+      "tool_id": "toolshed.g2.bx.psu.edu/repos/iuc/goseq/goseq/2.0.1",
+      "tool_version": "2.0.1",
+      "state": "ok",
+      "runner": "kubernetes",
+      "destination": "k8s",
+      "created_at": "2026-09-19T13:28:05Z",
+      "updated_at": "2026-09-19T13:31:00Z",
+      "copied_from_source_id": null,
+      "attempts": [
+        {
+          "source_attempt_id": "galaxy-0",
+          "runner": "kubernetes",
+          "external_id": "gxy-demo-11",
+          "outcome": "ok",
+          "tool_started_at": "2026-09-19T13:30:00Z",
+          "tool_finished_at": "2026-09-19T13:30:15Z",
+          "lifetimes": [
+            {
+              "resource_uid": "baseline-vm-demo",
+              "provider": "gcp",
+              "region": "us-central1",
+              "machine_type": "t2d-standard-4",
+              "purchase_model": "on_demand",
+              "capacity_relationship": "existing",
+              "observed_start": "2026-09-19T13:29:57Z",
+              "observed_end": "2026-09-19T13:30:16Z",
+              "timing_method": "kubernetes_pod_occupancy",
+              "requested_vcpu": 1,
+              "requested_memory_mib": 3891.2,
+              "facts": {
+                "isolation": "pod_request"
+              },
+              "resource_key": "pod-demo-11"
+            }
+          ]
+        }
+      ]
     },
     {
-      "source_id": "25", "owner_source_id": "bob", "tool_id": "toolshed.example.org/repos/demo/awaiting/awaiting/1.0", "tool_version": "1.0", "state": "queued", "runner": "kubernetes", "destination": "k8s", "created_at": "2026-09-19T13:39:50Z", "updated_at": "2026-09-19T13:39:55Z", "copied_from_source_id": null,
+      "source_id": "12",
+      "owner_source_id": "alice",
+      "tool_id": "toolshed.g2.bx.psu.edu/repos/iuc/goseq/goseq/2.0.1",
+      "tool_version": "2.0.1",
+      "state": "ok",
+      "runner": "kubernetes",
+      "destination": "k8s",
+      "created_at": "2026-09-19T13:28:06Z",
+      "updated_at": "2026-09-19T13:31:20Z",
+      "copied_from_source_id": null,
+      "attempts": [
+        {
+          "source_attempt_id": "galaxy-0",
+          "runner": "kubernetes",
+          "external_id": "gxy-demo-12",
+          "outcome": "ok",
+          "tool_started_at": "2026-09-19T13:30:19Z",
+          "tool_finished_at": "2026-09-19T13:30:34Z",
+          "lifetimes": [
+            {
+              "resource_uid": "baseline-vm-demo",
+              "provider": "gcp",
+              "region": "us-central1",
+              "machine_type": "t2d-standard-4",
+              "purchase_model": "on_demand",
+              "capacity_relationship": "existing",
+              "observed_start": "2026-09-19T13:30:16Z",
+              "observed_end": "2026-09-19T13:30:35Z",
+              "timing_method": "kubernetes_pod_occupancy",
+              "requested_vcpu": 1,
+              "requested_memory_mib": 3891.2,
+              "facts": {
+                "isolation": "pod_request"
+              },
+              "resource_key": "pod-demo-12"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "source_id": "13",
+      "owner_source_id": "alice",
+      "tool_id": "toolshed.g2.bx.psu.edu/repos/bgruening/text_processing/tp_join_tool/0.1.1",
+      "tool_version": "0.1.1",
+      "state": "ok",
+      "runner": "gcp_batch",
+      "destination": "batch-jobs",
+      "created_at": "2026-09-19T13:30:40Z",
+      "updated_at": "2026-09-19T13:32:36Z",
+      "copied_from_source_id": null,
+      "attempts": [
+        {
+          "source_attempt_id": "batch-task-0-attempt-0",
+          "runner": "gcp_batch",
+          "external_id": "demo-join",
+          "outcome": "ok",
+          "tool_started_at": "2026-09-19T13:31:50Z",
+          "tool_finished_at": "2026-09-19T13:31:51Z",
+          "lifetimes": [
+            {
+              "resource_uid": "batch-vm-demo-join",
+              "provider": "gcp",
+              "region": "us-central1",
+              "machine_type": "n2-highmem-4",
+              "purchase_model": "on_demand",
+              "capacity_relationship": "dedicated",
+              "observed_start": "2026-09-19T13:31:11.797060Z",
+              "observed_end": "2026-09-19T13:32:35.753323Z",
+              "timing_method": "compute_insert_complete_to_delete_request",
+              "requested_vcpu": 1,
+              "requested_memory_mib": 18432,
+              "facts": {
+                "actual_vcpu": 4,
+                "actual_memory_mib": 32768,
+                "disk_excluded": true
+              },
+              "resource_key": "vm-proxy-3081"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "source_id": "16",
+      "owner_source_id": "alice",
+      "tool_id": "toolshed.g2.bx.psu.edu/repos/devteam/fastqc/fastqc/0.74+galaxy1",
+      "tool_version": "0.74+galaxy1",
+      "state": "ok",
+      "runner": "gcp_batch",
+      "destination": "batch-jobs",
+      "created_at": "2026-09-19T13:29:50Z",
+      "updated_at": "2026-09-19T13:32:24Z",
+      "copied_from_source_id": null,
+      "attempts": [
+        {
+          "source_attempt_id": "batch-task-0-attempt-0",
+          "runner": "gcp_batch",
+          "external_id": "demo-fastqc-a",
+          "outcome": "ok",
+          "tool_started_at": "2026-09-19T13:31:28Z",
+          "tool_finished_at": "2026-09-19T13:31:32Z",
+          "lifetimes": [
+            {
+              "resource_uid": "batch-vm-demo-fastqc-a",
+              "provider": "gcp",
+              "region": "us-central1",
+              "machine_type": "n2-standard-2",
+              "purchase_model": "on_demand",
+              "capacity_relationship": "dedicated",
+              "observed_start": "2026-09-19T13:30:33.757644Z",
+              "observed_end": "2026-09-19T13:32:23.804482Z",
+              "timing_method": "compute_insert_complete_to_delete_request",
+              "requested_vcpu": 1,
+              "requested_memory_mib": 5734,
+              "facts": {
+                "actual_vcpu": 2,
+                "actual_memory_mib": 8192,
+                "disk_excluded": true
+              },
+              "resource_key": "vm-proxy-8108"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "source_id": "18",
+      "owner_source_id": "bob",
+      "tool_id": "toolshed.g2.bx.psu.edu/repos/devteam/fastqc/fastqc/0.74+galaxy1",
+      "tool_version": "0.74+galaxy1",
+      "state": "ok",
+      "runner": "gcp_batch",
+      "destination": "batch-jobs",
+      "created_at": "2026-09-19T13:30:55Z",
+      "updated_at": "2026-09-19T13:33:19Z",
+      "copied_from_source_id": null,
+      "attempts": [
+        {
+          "source_attempt_id": "batch-task-0-attempt-0",
+          "runner": "gcp_batch",
+          "external_id": "demo-fastqc-b",
+          "outcome": "ok",
+          "tool_started_at": "2026-09-19T13:32:08Z",
+          "tool_finished_at": "2026-09-19T13:32:13Z",
+          "lifetimes": [
+            {
+              "resource_uid": "batch-vm-demo-fastqc-b",
+              "provider": "gcp",
+              "region": "us-central1",
+              "machine_type": "n2-standard-2",
+              "purchase_model": "on_demand",
+              "capacity_relationship": "dedicated",
+              "observed_start": "2026-09-19T13:31:30.434451Z",
+              "observed_end": "2026-09-19T13:33:18.152988Z",
+              "timing_method": "compute_insert_complete_to_delete_request",
+              "requested_vcpu": 1,
+              "requested_memory_mib": 5734,
+              "facts": {
+                "actual_vcpu": 2,
+                "actual_memory_mib": 8192,
+                "disk_excluded": true
+              },
+              "resource_key": "vm-proxy-4119"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "source_id": "19",
+      "owner_source_id": "alice",
+      "tool_id": "cat1",
+      "tool_version": "1.0.2",
+      "state": "ok",
+      "runner": "kubernetes",
+      "destination": "k8s",
+      "created_at": "2026-09-19T13:35:00Z",
+      "updated_at": "2026-09-19T13:35:05Z",
+      "copied_from_source_id": null,
+      "attempts": [
+        {
+          "source_attempt_id": "galaxy-0",
+          "runner": "kubernetes",
+          "external_id": "gxy-demo-19",
+          "outcome": "ok",
+          "tool_started_at": "2026-09-19T13:35:02Z",
+          "tool_finished_at": "2026-09-19T13:35:02Z",
+          "lifetimes": [
+            {
+              "resource_uid": "baseline-vm-demo",
+              "provider": "gcp",
+              "region": "us-central1",
+              "machine_type": "t2d-standard-4",
+              "purchase_model": "on_demand",
+              "capacity_relationship": "existing",
+              "observed_start": "2026-09-19T13:35:01Z",
+              "observed_end": "2026-09-19T13:35:03Z",
+              "timing_method": "kubernetes_pod_occupancy",
+              "requested_vcpu": 1,
+              "requested_memory_mib": 1024,
+              "facts": {
+                "duration_resolution_warning": true
+              },
+              "resource_key": "pod-demo-19"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "source_id": "20",
+      "owner_source_id": "alice",
+      "tool_id": "cat1",
+      "tool_version": "1.0.2",
+      "state": "ok",
+      "runner": "kubernetes",
+      "destination": "k8s",
+      "created_at": "2026-09-19T13:35:00Z",
+      "updated_at": "2026-09-19T13:35:06Z",
+      "copied_from_source_id": null,
+      "attempts": [
+        {
+          "source_attempt_id": "galaxy-0",
+          "runner": "kubernetes",
+          "external_id": "gxy-demo-20",
+          "outcome": "ok",
+          "tool_started_at": "2026-09-19T13:35:03Z",
+          "tool_finished_at": "2026-09-19T13:35:03Z",
+          "lifetimes": [
+            {
+              "resource_uid": "baseline-vm-demo",
+              "provider": "gcp",
+              "region": "us-central1",
+              "machine_type": "t2d-standard-4",
+              "purchase_model": "on_demand",
+              "capacity_relationship": "existing",
+              "observed_start": "2026-09-19T13:35:02Z",
+              "observed_end": "2026-09-19T13:35:04Z",
+              "timing_method": "kubernetes_pod_occupancy",
+              "requested_vcpu": 1,
+              "requested_memory_mib": 1024,
+              "facts": {
+                "duration_resolution_warning": true
+              },
+              "resource_key": "pod-demo-20"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "source_id": "21",
+      "owner_source_id": "bob",
+      "tool_id": "toolshed.example.org/repos/demo/unsupported/unsupported/1.0",
+      "tool_version": "1.0",
+      "state": "error",
+      "runner": "unknown",
+      "destination": "legacy",
+      "created_at": "2026-09-19T13:36:00Z",
+      "updated_at": "2026-09-19T13:36:30Z",
+      "copied_from_source_id": null,
+      "attempts": [
+        {
+          "source_attempt_id": "galaxy-0",
+          "runner": "unknown",
+          "external_id": null,
+          "outcome": "error",
+          "tool_started_at": null,
+          "tool_finished_at": null,
+          "lifetimes": [
+            {
+              "resource_uid": "unknown",
+              "provider": "gcp",
+              "region": "us-central1",
+              "machine_type": null,
+              "purchase_model": null,
+              "capacity_relationship": "unknown",
+              "observed_start": null,
+              "observed_end": null,
+              "timing_method": "galaxy_record_only",
+              "requested_vcpu": null,
+              "requested_memory_mib": null,
+              "facts": {
+                "missing": [
+                  "resource_identity",
+                  "lifetime",
+                  "machine_type"
+                ]
+              },
+              "resource_key": "historical-fallback"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "source_id": "22",
+      "owner_source_id": "alice",
+      "tool_id": "toolshed.example.org/repos/demo/retried/retried/1.0",
+      "tool_version": "1.0",
+      "state": "ok",
+      "runner": "gcp_batch",
+      "destination": "batch-jobs",
+      "created_at": "2026-09-19T13:37:00Z",
+      "updated_at": "2026-09-19T13:39:00Z",
+      "copied_from_source_id": null,
+      "attempts": [
+        {
+          "source_attempt_id": "galaxy-0",
+          "runner": "kubernetes",
+          "external_id": "gxy-demo-22-first",
+          "outcome": "error",
+          "tool_started_at": "2026-09-19T13:37:10Z",
+          "tool_finished_at": "2026-09-19T13:37:20Z",
+          "lifetimes": [
+            {
+              "resource_uid": "baseline-vm-demo",
+              "provider": "gcp",
+              "region": "us-central1",
+              "machine_type": "t2d-standard-4",
+              "purchase_model": "on_demand",
+              "capacity_relationship": "existing",
+              "observed_start": "2026-09-19T13:37:05Z",
+              "observed_end": "2026-09-19T13:37:21Z",
+              "timing_method": "kubernetes_pod_occupancy",
+              "requested_vcpu": 1,
+              "requested_memory_mib": 1024,
+              "facts": {
+                "resubmitted": true
+              },
+              "resource_key": "pod-demo-22-first"
+            }
+          ]
+        },
+        {
+          "source_attempt_id": "galaxy-1-batch-task-0",
+          "runner": "gcp_batch",
+          "external_id": "demo-retry-success",
+          "outcome": "ok",
+          "tool_started_at": "2026-09-19T13:38:10Z",
+          "tool_finished_at": "2026-09-19T13:38:20Z",
+          "lifetimes": [
+            {
+              "resource_uid": "batch-vm-demo-retry",
+              "provider": "gcp",
+              "region": "us-central1",
+              "machine_type": "n2-standard-2",
+              "purchase_model": "on_demand",
+              "capacity_relationship": "dedicated",
+              "observed_start": "2026-09-19T13:37:50Z",
+              "observed_end": "2026-09-19T13:38:50Z",
+              "timing_method": "compute_insert_complete_to_delete_request",
+              "requested_vcpu": 1,
+              "requested_memory_mib": 2048,
+              "facts": {
+                "resubmission_of": "galaxy-0",
+                "actual_vcpu": 2,
+                "actual_memory_mib": 8192
+              },
+              "resource_key": "vm-proxy-retry"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "source_id": "23",
+      "owner_source_id": "alice",
+      "tool_id": "toolshed.example.org/repos/demo/time-boundary/time-boundary/1.0",
+      "tool_version": "1.0",
+      "state": "ok",
+      "runner": "gcp_batch",
+      "destination": "batch-jobs",
+      "created_at": "2026-03-08T06:54:00Z",
+      "updated_at": "2026-03-08T07:06:00Z",
+      "copied_from_source_id": null,
+      "attempts": [
+        {
+          "source_attempt_id": "synthetic-dst",
+          "runner": "gcp_batch",
+          "external_id": "synthetic-dst-boundary",
+          "outcome": "ok",
+          "tool_started_at": "2026-03-08T06:55:10Z",
+          "tool_finished_at": "2026-03-08T07:04:50Z",
+          "lifetimes": [
+            {
+              "resource_uid": "synthetic-dst-vm",
+              "provider": "gcp",
+              "region": "us-central1",
+              "machine_type": "n2-standard-2",
+              "purchase_model": "on_demand",
+              "capacity_relationship": "dedicated",
+              "observed_start": "2026-03-08T06:55:00Z",
+              "observed_end": "2026-03-08T07:05:00Z",
+              "timing_method": "synthetic_acceptance_fixture",
+              "requested_vcpu": 2,
+              "requested_memory_mib": 8192,
+              "facts": {
+                "synthetic": true,
+                "scenario": "America/New_York DST boundary"
+              },
+              "resource_key": "synthetic-dst-interval"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "source_id": "24",
+      "owner_source_id": "alice",
+      "tool_id": "toolshed.example.org/repos/demo/running/running/1.0",
+      "tool_version": "1.0",
+      "state": "running",
+      "runner": "gcp_batch",
+      "destination": "batch-jobs",
+      "created_at": "2026-09-19T13:39:30Z",
+      "updated_at": "2026-09-19T13:40:00Z",
+      "copied_from_source_id": null,
+      "attempts": [
+        {
+          "source_attempt_id": "synthetic-running",
+          "runner": "gcp_batch",
+          "external_id": "synthetic-running-vm",
+          "outcome": "running",
+          "tool_started_at": "2026-09-19T13:39:45Z",
+          "tool_finished_at": null,
+          "lifetimes": [
+            {
+              "resource_uid": "synthetic-running-vm",
+              "provider": "gcp",
+              "region": "us-central1",
+              "machine_type": "n2-standard-2",
+              "purchase_model": "on_demand",
+              "capacity_relationship": "dedicated",
+              "observed_start": "2026-09-19T13:39:40Z",
+              "observed_end": null,
+              "timing_method": "synthetic_acceptance_fixture",
+              "requested_vcpu": 2,
+              "requested_memory_mib": 8192,
+              "facts": {
+                "synthetic": true,
+                "scenario": "in-progress work"
+              },
+              "resource_key": "synthetic-open-interval"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "source_id": "25",
+      "owner_source_id": "bob",
+      "tool_id": "toolshed.example.org/repos/demo/awaiting/awaiting/1.0",
+      "tool_version": "1.0",
+      "state": "queued",
+      "runner": "kubernetes",
+      "destination": "k8s",
+      "created_at": "2026-09-19T13:39:50Z",
+      "updated_at": "2026-09-19T13:39:55Z",
+      "copied_from_source_id": null,
       "attempts": []
     },
     {
-      "source_id": "26", "owner_source_id": "alice", "tool_id": "toolshed.g2.bx.psu.edu/repos/devteam/fastqc/fastqc/0.74+galaxy1", "tool_version": "0.74+galaxy1", "state": "ok", "runner": "kubernetes", "destination": "k8s", "created_at": "2026-09-19T13:40:00Z", "updated_at": "2026-09-19T13:40:05Z", "copied_from_source_id": "16",
-      "attempts": [{"source_attempt_id": "synthetic-reuse", "runner": "kubernetes", "external_id": "synthetic-reuse-output", "outcome": "ok", "tool_started_at": "2026-09-19T13:40:01Z", "tool_finished_at": "2026-09-19T13:40:02Z", "resource_intervals": [{"source_interval_id": "synthetic-reuse-interval", "resource_uid": "baseline-vm-demo", "provider": "gcp", "region": "us-central1", "machine_type": "t2d-standard-4", "purchase_model": "on_demand", "capacity_relationship": "existing", "observed_start": "2026-09-19T13:40:01Z", "observed_end": "2026-09-19T13:40:02Z", "timing_method": "synthetic_acceptance_fixture", "requested_vcpu": 0, "requested_memory_mib": 0, "facts": {"synthetic": true, "scenario": "reused output"}}]}]
+      "source_id": "26",
+      "owner_source_id": "alice",
+      "tool_id": "toolshed.g2.bx.psu.edu/repos/devteam/fastqc/fastqc/0.74+galaxy1",
+      "tool_version": "0.74+galaxy1",
+      "state": "ok",
+      "runner": "kubernetes",
+      "destination": "k8s",
+      "created_at": "2026-09-19T13:40:00Z",
+      "updated_at": "2026-09-19T13:40:05Z",
+      "copied_from_source_id": "16",
+      "attempts": [
+        {
+          "source_attempt_id": "synthetic-reuse",
+          "runner": "kubernetes",
+          "external_id": "synthetic-reuse-output",
+          "outcome": "ok",
+          "tool_started_at": "2026-09-19T13:40:01Z",
+          "tool_finished_at": "2026-09-19T13:40:02Z",
+          "lifetimes": [
+            {
+              "resource_uid": "baseline-vm-demo",
+              "provider": "gcp",
+              "region": "us-central1",
+              "machine_type": "t2d-standard-4",
+              "purchase_model": "on_demand",
+              "capacity_relationship": "existing",
+              "observed_start": "2026-09-19T13:40:01Z",
+              "observed_end": "2026-09-19T13:40:02Z",
+              "timing_method": "synthetic_acceptance_fixture",
+              "requested_vcpu": 0,
+              "requested_memory_mib": 0,
+              "facts": {
+                "synthetic": true,
+                "scenario": "reused output"
+              },
+              "resource_key": "synthetic-reuse-interval"
+            }
+          ]
+        }
+      ]
     },
     {
-      "source_id": "27", "owner_source_id": "alice", "tool_id": "toolshed.example.org/repos/demo/midnight-price/midnight-price/1.0", "tool_version": "1.0", "state": "ok", "runner": "gcp_batch", "destination": "batch-jobs", "created_at": "2026-09-19T23:58:30Z", "updated_at": "2026-09-20T00:01:30Z", "copied_from_source_id": null,
-      "attempts": [{"source_attempt_id": "synthetic-midnight-price", "runner": "gcp_batch", "external_id": "synthetic-midnight-price", "outcome": "ok", "tool_started_at": "2026-09-19T23:59:00Z", "tool_finished_at": "2026-09-20T00:01:00Z", "resource_intervals": [
-        {"source_interval_id": "before-price-change", "resource_uid": "synthetic-price-vm-a", "provider": "gcp", "region": "us-central1", "machine_type": "n2-standard-2", "purchase_model": "on_demand", "capacity_relationship": "dedicated", "observed_start": "2026-09-19T23:59:00Z", "observed_end": "2026-09-20T00:00:00Z", "timing_method": "synthetic_acceptance_fixture", "requested_vcpu": 2, "requested_memory_mib": 8192, "facts": {"synthetic": true, "scenario": "midnight and price boundary before"}},
-        {"source_interval_id": "after-price-change", "resource_uid": "synthetic-price-vm-b", "provider": "gcp", "region": "us-central1", "machine_type": "n2-standard-2", "purchase_model": "on_demand", "capacity_relationship": "dedicated", "observed_start": "2026-09-20T00:00:00Z", "observed_end": "2026-09-20T00:01:00Z", "timing_method": "synthetic_acceptance_fixture", "requested_vcpu": 2, "requested_memory_mib": 8192, "facts": {"synthetic": true, "scenario": "midnight and price boundary after"}}
-      ]}]
+      "source_id": "27",
+      "owner_source_id": "alice",
+      "tool_id": "toolshed.example.org/repos/demo/midnight-price/midnight-price/1.0",
+      "tool_version": "1.0",
+      "state": "ok",
+      "runner": "gcp_batch",
+      "destination": "batch-jobs",
+      "created_at": "2026-09-19T23:58:30Z",
+      "updated_at": "2026-09-20T00:01:30Z",
+      "copied_from_source_id": null,
+      "attempts": [
+        {
+          "source_attempt_id": "synthetic-midnight-price",
+          "runner": "gcp_batch",
+          "external_id": "synthetic-midnight-price",
+          "outcome": "ok",
+          "tool_started_at": "2026-09-19T23:59:00Z",
+          "tool_finished_at": "2026-09-20T00:01:00Z",
+          "lifetimes": [
+            {
+              "resource_uid": "synthetic-price-vm-a",
+              "provider": "gcp",
+              "region": "us-central1",
+              "machine_type": "n2-standard-2",
+              "purchase_model": "on_demand",
+              "capacity_relationship": "dedicated",
+              "observed_start": "2026-09-19T23:59:00Z",
+              "observed_end": "2026-09-20T00:00:00Z",
+              "timing_method": "synthetic_acceptance_fixture",
+              "requested_vcpu": 2,
+              "requested_memory_mib": 8192,
+              "facts": {
+                "synthetic": true,
+                "scenario": "midnight and price boundary before"
+              },
+              "resource_key": "before-price-change"
+            },
+            {
+              "resource_uid": "synthetic-price-vm-b",
+              "provider": "gcp",
+              "region": "us-central1",
+              "machine_type": "n2-standard-2",
+              "purchase_model": "on_demand",
+              "capacity_relationship": "dedicated",
+              "observed_start": "2026-09-20T00:00:00Z",
+              "observed_end": "2026-09-20T00:01:00Z",
+              "timing_method": "synthetic_acceptance_fixture",
+              "requested_vcpu": 2,
+              "requested_memory_mib": 8192,
+              "facts": {
+                "synthetic": true,
+                "scenario": "midnight and price boundary after"
+              },
+              "resource_key": "after-price-change"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "source_id": "28",
+      "owner_source_id": "alice",
+      "tool_id": "toolshed.g2.bx.psu.edu/repos/goeckslab/image_learner/image_learner/1.0.0",
+      "tool_version": "1.0.0",
+      "state": "ok",
+      "exit_code": 0,
+      "runner": "gcp_batch",
+      "destination": "gcp_batch",
+      "created_at": "2026-09-19T13:58:00Z",
+      "updated_at": "2026-09-19T14:09:30Z",
+      "copied_from_source_id": null,
+      "attempts": [
+        {
+          "source_attempt_id": "batch:demo-uid:task-0:attempt-0",
+          "runner": "gcp_batch",
+          "external_id": "projects/demo-project/locations/us-central1/jobs/galaxy-batch-demo-28",
+          "outcome": "failed",
+          "provider_outcome": "SUCCEEDED",
+          "exit_code": 125,
+          "task_index": 0,
+          "attempt_ordinal": 0,
+          "tool_started_at": "2026-09-19T14:00:53Z",
+          "tool_finished_at": "2026-09-19T14:01:10Z",
+          "lifetimes": [
+            {
+              "resource_key": "gce:demo-project/us-central1-a/8649021727128195799",
+              "resource_uid": "8649021727128195799",
+              "provider": "gcp",
+              "project": "demo-project",
+              "zone": "us-central1-a",
+              "region": "us-central1",
+              "machine_type": "n2-highmem-4",
+              "purchase_model": "on_demand",
+              "capacity_relationship": "dedicated",
+              "observed_start": "2026-09-19T14:00:00Z",
+              "observed_end": "2026-09-19T14:09:06.386123Z",
+              "timing_method": "compute_insert_complete_to_delete_request",
+              "requested_vcpu": 4,
+              "requested_memory_mib": 32768,
+              "facts": {
+                "synthetic": true,
+                "scenario": "same-VM provider retry",
+                "vm_identity_source": "task_event_text",
+                "note": "Structure follows an observed Batch task retry; identifiers and shape are synthetic."
+              }
+            }
+          ]
+        },
+        {
+          "source_attempt_id": "batch:demo-uid:task-0:attempt-1",
+          "runner": "gcp_batch",
+          "external_id": "projects/demo-project/locations/us-central1/jobs/galaxy-batch-demo-28",
+          "outcome": "ok",
+          "provider_outcome": "SUCCEEDED",
+          "exit_code": 0,
+          "task_index": 0,
+          "attempt_ordinal": 1,
+          "tool_started_at": "2026-09-19T14:01:43Z",
+          "tool_finished_at": "2026-09-19T14:08:56Z",
+          "lifetimes": [
+            {
+              "resource_key": "gce:demo-project/us-central1-a/8649021727128195799",
+              "resource_uid": "8649021727128195799",
+              "provider": "gcp",
+              "project": "demo-project",
+              "zone": "us-central1-a",
+              "region": "us-central1",
+              "machine_type": "n2-highmem-4",
+              "purchase_model": "on_demand",
+              "capacity_relationship": "dedicated",
+              "observed_start": "2026-09-19T14:00:00Z",
+              "observed_end": "2026-09-19T14:09:06.386123Z",
+              "timing_method": "compute_insert_complete_to_delete_request",
+              "requested_vcpu": 4,
+              "requested_memory_mib": 32768,
+              "facts": {
+                "synthetic": true,
+                "scenario": "same-VM provider retry",
+                "vm_identity_source": "task_event_text",
+                "note": "Structure follows an observed Batch task retry; identifiers and shape are synthetic."
+              }
+            }
+          ]
+        }
+      ]
     }
   ],
   "invocations": [
-    {"source_id": "invocation-mixed", "owner_source_id": "alice", "parent_source_id": null, "workflow_id": "workflow-rnaseq-mixed", "workflow_name": "RNA-seq mixed execution demo", "workflow_version": "1", "state": "scheduled", "created_at": "2026-09-19T13:27:50Z", "jobs": [
-      {"job_source_id": "9", "step_key": "goseq-1", "relationship": "direct"}, {"job_source_id": "10", "step_key": "goseq-2", "relationship": "direct"}, {"job_source_id": "11", "step_key": "goseq-3", "relationship": "direct"}, {"job_source_id": "12", "step_key": "goseq-4", "relationship": "direct"}, {"job_source_id": "13", "step_key": "join", "relationship": "direct"}
-    ]},
-    {"source_id": "invocation-nested-root", "owner_source_id": "alice", "parent_source_id": null, "workflow_id": "workflow-nested-collection", "workflow_name": "Nested collection demo", "workflow_version": "1", "state": "scheduled", "created_at": "2026-09-19T13:34:50Z", "jobs": [
-      {"job_source_id": "19", "step_key": "nested/cat/element-0", "relationship": "descendant_collection"}, {"job_source_id": "20", "step_key": "nested/cat/element-1", "relationship": "descendant_collection"}
-    ]},
-    {"source_id": "invocation-nested-child", "owner_source_id": "alice", "parent_source_id": "invocation-nested-root", "workflow_id": "workflow-collection-cat", "workflow_name": "Collection cat subworkflow", "workflow_version": "1", "state": "scheduled", "created_at": "2026-09-19T13:34:55Z", "jobs": [
-      {"job_source_id": "19", "step_key": "cat/element-0", "relationship": "collection"}, {"job_source_id": "20", "step_key": "cat/element-1", "relationship": "collection"}
-    ]},
-    {"source_id": "invocation-synthetic-acceptance", "owner_source_id": "alice", "parent_source_id": null, "workflow_id": "workflow-synthetic-boundaries", "workflow_name": "Synthetic reporting boundaries", "workflow_version": "phase2a", "state": "scheduled", "created_at": "2026-09-19T13:39:30Z", "jobs": [
-      {"job_source_id": "23", "step_key": "dst", "relationship": "direct"}, {"job_source_id": "24", "step_key": "running", "relationship": "direct"}, {"job_source_id": "26", "step_key": "reuse", "relationship": "reused"}, {"job_source_id": "27", "step_key": "price-boundary", "relationship": "direct"}
-    ]}
+    {
+      "source_id": "invocation-mixed",
+      "owner_source_id": "alice",
+      "parent_source_id": null,
+      "workflow_id": "workflow-rnaseq-mixed",
+      "workflow_name": "RNA-seq mixed execution demo",
+      "workflow_version": "1",
+      "state": "scheduled",
+      "created_at": "2026-09-19T13:27:50Z",
+      "jobs": [
+        {
+          "job_source_id": "9",
+          "step_key": "goseq-1",
+          "relationship": "direct"
+        },
+        {
+          "job_source_id": "10",
+          "step_key": "goseq-2",
+          "relationship": "direct"
+        },
+        {
+          "job_source_id": "11",
+          "step_key": "goseq-3",
+          "relationship": "direct"
+        },
+        {
+          "job_source_id": "12",
+          "step_key": "goseq-4",
+          "relationship": "direct"
+        },
+        {
+          "job_source_id": "13",
+          "step_key": "join",
+          "relationship": "direct"
+        }
+      ]
+    },
+    {
+      "source_id": "invocation-nested-root",
+      "owner_source_id": "alice",
+      "parent_source_id": null,
+      "workflow_id": "workflow-nested-collection",
+      "workflow_name": "Nested collection demo",
+      "workflow_version": "1",
+      "state": "scheduled",
+      "created_at": "2026-09-19T13:34:50Z",
+      "jobs": [
+        {
+          "job_source_id": "19",
+          "step_key": "nested/cat/element-0",
+          "relationship": "descendant_collection"
+        },
+        {
+          "job_source_id": "20",
+          "step_key": "nested/cat/element-1",
+          "relationship": "descendant_collection"
+        }
+      ]
+    },
+    {
+      "source_id": "invocation-nested-child",
+      "owner_source_id": "alice",
+      "parent_source_id": "invocation-nested-root",
+      "workflow_id": "workflow-collection-cat",
+      "workflow_name": "Collection cat subworkflow",
+      "workflow_version": "1",
+      "state": "scheduled",
+      "created_at": "2026-09-19T13:34:55Z",
+      "jobs": [
+        {
+          "job_source_id": "19",
+          "step_key": "cat/element-0",
+          "relationship": "collection"
+        },
+        {
+          "job_source_id": "20",
+          "step_key": "cat/element-1",
+          "relationship": "collection"
+        }
+      ]
+    },
+    {
+      "source_id": "invocation-synthetic-acceptance",
+      "owner_source_id": "alice",
+      "parent_source_id": null,
+      "workflow_id": "workflow-synthetic-boundaries",
+      "workflow_name": "Synthetic reporting boundaries",
+      "workflow_version": "phase2a",
+      "state": "scheduled",
+      "created_at": "2026-09-19T13:39:30Z",
+      "jobs": [
+        {
+          "job_source_id": "23",
+          "step_key": "dst",
+          "relationship": "direct"
+        },
+        {
+          "job_source_id": "24",
+          "step_key": "running",
+          "relationship": "direct"
+        },
+        {
+          "job_source_id": "26",
+          "step_key": "reuse",
+          "relationship": "reused"
+        },
+        {
+          "job_source_id": "27",
+          "step_key": "price-boundary",
+          "relationship": "direct"
+        }
+      ]
+    }
   ],
-  "infrastructure_intervals": [{
-    "source_id": "baseline-six-minute-window", "resource_uid": "baseline-vm-demo", "machine_type": "t2d-standard-4", "region": "us-central1", "observed_start": "2026-09-19T13:28:00Z", "observed_end": "2026-09-19T13:34:00Z", "amount": "0.0168984", "currency": "USD", "quality": "approximate"
-  }]
+  "infrastructure_intervals": [
+    {
+      "source_id": "baseline-six-minute-window",
+      "resource_uid": "baseline-vm-demo",
+      "machine_type": "t2d-standard-4",
+      "region": "us-central1",
+      "observed_start": "2026-09-19T13:28:00Z",
+      "observed_end": "2026-09-19T13:34:00Z",
+      "amount": "0.0168984",
+      "currency": "USD",
+      "quality": "approximate"
+    }
+  ]
 }

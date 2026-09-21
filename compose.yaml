@@ -28,7 +28,13 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    command: ["sh", "-c", "alembic upgrade head && rainstone ingest-fixtures --path fixtures/phase1.json"]
+    command:
+      - sh
+      - -c
+      - >-
+        alembic upgrade head &&
+        rainstone catalog import --path catalog/gcp-us-central1-2026-09-19.json &&
+        rainstone ingest-fixtures --path fixtures/phase1.json
     volumes:
       - ./backend:/app/backend
       - ./alembic:/app/alembic
@@ -59,6 +65,26 @@ services:
       interval: 3s
       timeout: 3s
       retries: 30
+
+  collector:
+    # Off by default: `docker compose --profile collect up collector` runs the
+    # same process the chart deploys, against whatever sources are configured.
+    profiles: ["collect"]
+    build:
+      context: .
+      target: backend-dev
+    environment:
+      <<: *app-env
+      RAINSTONE_KUBERNETES_ENABLED: "false"
+      RAINSTONE_GCP_BATCH_ENABLED: "false"
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    command: ["rainstone", "collect"]
+    volumes:
+      - ./backend:/app/backend
+      - ./fixtures:/app/fixtures:ro
+      - ./catalog:/app/catalog:ro
 
   frontend:
     build:
@@ -121,7 +147,14 @@ services:
     depends_on:
       test-postgres:
         condition: service_healthy
-    command: ["sh", "-c", "alembic upgrade head && rainstone ingest-fixtures --path fixtures/phase1.json && uvicorn rainstone.main:app --host 0.0.0.0 --port 8000"]
+    command:
+      - sh
+      - -c
+      - >-
+        alembic upgrade head &&
+        rainstone catalog import --path catalog/gcp-us-central1-2026-09-19.json &&
+        rainstone ingest-fixtures --path fixtures/phase1.json &&
+        uvicorn rainstone.main:app --host 0.0.0.0 --port 8000
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
       interval: 2s

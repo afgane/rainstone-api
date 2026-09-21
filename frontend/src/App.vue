@@ -1,17 +1,20 @@
 <script setup lang="ts">
 import {
-  BarChart3, BriefcaseBusiness, Building2, CircleDollarSign, Database,
+  Activity, BarChart3, BriefcaseBusiness, Building2, CircleDollarSign, Database,
   Download, RefreshCw, Search, Users, Wrench, Workflow, X,
 } from "@lucide/vue";
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import {
-  downloadExport, get, loadReport, queryString, type DailyItem, type Freshness,
-  type GroupItem, type Invocation, type Job, type Me, type ReportState, type Summary, type View,
+  diagnosticsUrl, downloadExport, get, loadReport, queryString, type DailyItem, type Freshness,
+  type GroupItem, type Invocation, type Job, type Me, type ReportState, type Status,
+  type Summary, type View,
 } from "./api";
 import CostAmount from "./components/CostAmount.vue";
 import JobsTable from "./components/JobsTable.vue";
 
-const validViews: View[] = ["overview", "jobs", "tools", "invocations", "daily", "users", "infrastructure"];
+const validViews: View[] = [
+  "overview", "jobs", "tools", "invocations", "daily", "users", "infrastructure", "status",
+];
 function stateFromUrl(): ReportState {
   const params = new URLSearchParams(location.search);
   const view = params.get("view") as View;
@@ -64,7 +67,9 @@ const nav = computed(() => [
   { id: "daily" as View, label: "Daily", icon: BarChart3 },
   ...(me.value?.capabilities.users ? [{ id: "users" as View, label: "Users", icon: Users }] : []),
   ...(me.value?.capabilities.infrastructure ? [{ id: "infrastructure" as View, label: "Infrastructure", icon: Building2 }] : []),
+  { id: "status" as View, label: "Status", icon: Activity },
 ]);
+const status = computed(() => state.view === "status" ? viewData.value as Status | null : null);
 const basisTitle = computed(() => state.basis === "additional" ? "Additional compute spend" : "Allocated resource cost");
 const overviewParts = computed(() => Array.isArray(viewData.value) ? viewData.value as Array<{ items?: unknown[] }> : []);
 const groups = computed(() => state.view === "overview"
@@ -204,6 +209,7 @@ onBeforeUnmount(() => { controller?.abort(); window.removeEventListener("popstat
     <div class="masthead-inner">
       <div class="brand"><CircleDollarSign :size="28" aria-hidden="true" /><span>Rainstone</span></div>
       <span v-if="summary?.demo" class="demo-badge">Demo data · synthetic scenarios included</span>
+      <span v-else-if="me?.attribution" class="demo-badge">{{ me.attribution }}</span>
     </div>
   </header>
   <div class="shell">
@@ -307,10 +313,24 @@ onBeforeUnmount(() => { controller?.abort(); window.removeEventListener("popstat
           <div class="table-wrap"><table><thead><tr><th>Resource</th><th>Shape / region</th><th>Observed window</th><th>Cost</th><th>Quality</th></tr></thead><tbody><tr v-for="item in ((viewData as {items?: Array<Record<string,string>>})?.items || [])" :key="item.id"><td>{{ item.resource_uid }}</td><td>{{ item.machine_type }} · {{ item.region }}</td><td>{{ new Date(item.observed_start).toLocaleString() }} – {{ new Date(item.observed_end).toLocaleString() }}</td><td><CostAmount :amount="item.amount" /></td><td>{{ item.quality }}</td></tr></tbody></table></div>
         </section>
 
+        <section v-else-if="state.view === 'status'" class="panel">
+          <div class="panel-heading"><div><h2>Deployment status</h2>
+            <p>Read-only self-checks for this instance. Diagnostics exclude credentials,
+              connection strings and job parameters.</p></div>
+            <a class="secondary" :href="diagnosticsUrl()" download>Download diagnostics</a></div>
+          <div class="callout">Overall {{ status?.overall_status }} · identity mode
+            {{ status?.auth_mode }} · instance {{ status?.tenant }}</div>
+          <div class="table-wrap"><table><thead><tr><th>Check</th><th>Status</th><th>Finding</th></tr></thead><tbody>
+            <tr v-for="check in status?.checks || []" :key="check.name">
+              <td><strong>{{ check.name }}</strong></td><td>{{ check.status }}</td><td>{{ check.detail }}</td></tr>
+          </tbody></table></div>
+        </section>
+
         <nav v-if="state.view === 'jobs' && jobs.total > jobs.limit" class="pagination" aria-label="Jobs pagination">
           <button :disabled="state.offset === 0" @click="state.offset = Math.max(0, state.offset - jobs.limit); refresh(true)">Previous</button><span>Page {{ page }} · {{ jobs.total }} jobs</span><button :disabled="state.offset + jobs.limit >= jobs.total" @click="state.offset += jobs.limit; refresh(true)">Next</button>
         </nav>
-        <footer><Database :size="16" /> Collector {{ freshness?.overall_status }} · <span v-for="source in freshness?.sources" :key="source.source">{{ source.source }}: {{ source.status }} </span></footer>
+        <footer><Database :size="16" /> Collector {{ freshness?.overall_status }} · <span v-for="source in freshness?.sources" :key="source.source">{{ source.source }}: {{ source.status }} </span>
+          <span v-if="freshness?.observation_gaps?.length">· {{ freshness.observation_gaps.length }} observation gaps recorded</span></footer>
       </template>
     </main>
   </div>
@@ -322,7 +342,19 @@ onBeforeUnmount(() => { controller?.abort(); window.removeEventListener("popstat
       <template v-else-if="detail"><p class="eyebrow">Traceable report detail</p><h2 id="detail-title">{{ detail.workflow_name || `Job #${detail.source_id}` }}</h2>
         <p v-if="detail.full_job_amount !== undefined"><strong>Selected interval:</strong> <CostAmount :amount="detailAmount(detail.interval_amount)" /> · <strong>Full job:</strong> <CostAmount :amount="detailAmount(detail.full_job_amount)" /></p>
         <p>{{ detail.reason }}</p>
-        <div v-if="detailList('attempts').length" class="detail-list"><article v-for="attempt in detailList('attempts')" :key="String(attempt.id)"><strong>Attempt {{ attempt.source_attempt_id }}</strong><span>{{ attempt.runner }} · {{ attempt.outcome }} · {{ attempt.quality }}</span><span>{{ attempt.machine_type || 'Unknown machine' }} · {{ attempt.capacity_relationship }}</span><CostAmount :amount="detailAmount(attempt.amount)" /><small>{{ attempt.reason }}</small></article></div>
+        <div v-if="detailList('resources').length" class="detail-list"><article v-for="resource in detailList('resources')" :key="String(resource.lifetime_id)">
+          <strong>{{ resource.machine_type || 'Unknown machine' }}</strong>
+          <span>{{ resource.capacity_relationship }} · {{ resource.region || 'region unknown' }} · {{ resource.timing_method }}</span>
+          <span>{{ resource.resource_uid }}</span>
+          <CostAmount :amount="detailAmount(resource.amount)" />
+          <small v-if="Number(resource.shared_attempt_count) > 1">Charged once for {{ resource.shared_attempt_count }} attempts that reused this resource</small>
+          <small>{{ resource.reason }}</small></article></div>
+        <div v-if="detailList('attempts').length" class="detail-list"><article v-for="attempt in detailList('attempts')" :key="String(attempt.id)">
+          <strong>Attempt {{ attempt.source_attempt_id }}</strong>
+          <span>{{ attempt.runner }} · Galaxy {{ attempt.outcome }} · provider {{ attempt.provider_outcome || 'not observed' }}<span v-if="attempt.exit_code !== null"> · exit {{ attempt.exit_code }}</span></span>
+          <span v-if="attempt.tool_started_at">Tool {{ new Date(String(attempt.tool_started_at)).toLocaleString() }} – {{ attempt.tool_finished_at ? new Date(String(attempt.tool_finished_at)).toLocaleString() : 'running' }}</span>
+          <CostAmount v-if="attempt.amount" :amount="detailAmount(attempt.amount)" />
+          <small v-else-if="detailList('attempts').length > 1">Shared resource charge; see the resource above</small></article></div>
         <div v-if="detailList('steps').length" class="detail-list"><article v-for="step in detailList('steps')" :key="String(step.step_key)"><strong>{{ step.step_key }}</strong><span>{{ step.relationship }}</span><button v-if="step.job" class="secondary" @click="showDetail('jobs', String((step.job as Record<string, unknown>).id))">Open job #{{ (step.job as Record<string, unknown>).source_id }}</button><small v-else>No authorized matching job</small></article></div>
         <div v-if="detailList('children').length" class="detail-list"><article v-for="child in detailList('children')" :key="String(child.id)"><strong>{{ child.workflow_name }}</strong><span>{{ child.job_count }} jobs</span><button class="secondary" @click="showDetail('invocations', String(child.id))">Open child workflow</button></article></div>
       </template>

@@ -1,0 +1,254 @@
+{
+  "metadata": {
+    "resourceVersion": "4300"
+  },
+  "items": [
+    {
+      "metadata": {
+        "name": "gxy-galaxy-aaaaa-11111",
+        "uid": "pod-uid-1498",
+        "resourceVersion": "4242",
+        "creationTimestamp": "2026-09-21T13:38:10Z",
+        "labels": {
+          "app.galaxyproject.org/job_id": "1498",
+          "app.galaxyproject.org/destination": "k8s",
+          "batch.kubernetes.io/job-name": "gxy-galaxy-aaaaa"
+        },
+        "ownerReferences": [
+          {
+            "kind": "Job",
+            "name": "gxy-galaxy-aaaaa",
+            "uid": "owner-uid-1",
+            "controller": true
+          }
+        ]
+      },
+      "spec": {
+        "nodeName": "galaxy-baseline-vm",
+        "containers": [
+          {
+            "name": "k8s",
+            "resources": {
+              "requests": {
+                "cpu": "1",
+                "memory": "4080218931200m"
+              },
+              "limits": {
+                "memory": "4080218931200m"
+              }
+            }
+          }
+        ],
+        "initContainers": [
+          {
+            "name": "setup",
+            "resources": {
+              "requests": {
+                "cpu": "500m",
+                "memory": "512Mi"
+              }
+            }
+          }
+        ]
+      },
+      "status": {
+        "phase": "Succeeded",
+        "startTime": "2026-09-21T13:38:10Z",
+        "conditions": [
+          {
+            "type": "PodScheduled",
+            "status": "True",
+            "lastTransitionTime": "2026-09-21T13:38:12Z"
+          },
+          {
+            "type": "Ready",
+            "status": "False",
+            "reason": "PodCompleted",
+            "lastTransitionTime": "2026-09-21T13:38:52Z"
+          }
+        ],
+        "containerStatuses": [
+          {
+            "name": "k8s",
+            "restartCount": 0,
+            "lastState": {},
+            "state": {
+              "terminated": {
+                "exitCode": 0,
+                "reason": "Completed",
+                "startedAt": "2026-09-21T13:38:35Z",
+                "finishedAt": "2026-09-21T13:38:51Z"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "metadata": {
+        "name": "gxy-galaxy-bbbbb-22222",
+        "uid": "pod-uid-1499",
+        "resourceVersion": "4242",
+        "creationTimestamp": "2026-09-21T13:38:10Z",
+        "labels": {
+          "app.galaxyproject.org/job_id": "1499",
+          "app.galaxyproject.org/destination": "k8s",
+          "batch.kubernetes.io/job-name": "gxy-galaxy-bbbbb"
+        },
+        "ownerReferences": [
+          {
+            "kind": "Job",
+            "name": "gxy-galaxy-bbbbb",
+            "uid": "owner-uid-1",
+            "controller": true
+          }
+        ]
+      },
+      "spec": {
+        "nodeName": "galaxy-baseline-vm",
+        "containers": [
+          {
+            "name": "k8s",
+            "resources": {
+              "requests": {
+                "cpu": "1",
+                "memory": "4080218931200m"
+              },
+              "limits": {
+                "memory": "4080218931200m"
+              }
+            }
+          }
+        ],
+        "initContainers": [
+          {
+            "name": "setup",
+            "resources": {
+              "requests": {
+                "cpu": "500m",
+                "memory": "512Mi"
+              }
+            }
+          }
+        ]
+      },
+      "status": {
+        "phase": "Succeeded",
+        "startTime": "2026-09-21T13:38:10Z",
+        "conditions": [
+          {
+            "type": "PodScheduled",
+            "status": "True",
+            "lastTransitionTime": "2026-09-21T13:38:12Z"
+          },
+          {
+            "type": "Ready",
+            "status": "False",
+            "reason": "PodCompleted",
+            "lastTransitionTime": "2026-09-21T13:38:52Z"
+          }
+        ],
+        "containerStatuses": [
+          {
+            "name": "k8s",
+            "restartCount": 1,
+            "lastState": {
+              "terminated": {
+                "exitCode": 137,
+                "reason": "OOMKilled",
+                "startedAt": "2026-09-21T13:38:20Z",
+                "finishedAt": "2026-09-21T13:38:30Z"
+              }
+            },
+            "state": {
+              "terminated": {
+                "exitCode": 0,
+                "reason": "Completed",
+                "startedAt": "2026-09-21T13:38:35Z",
+                "finishedAt": "2026-09-21T13:38:51Z"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "metadata": {
+        "name": "gxy-galaxy-ccccc-33333",
+        "uid": "pod-uid-1500",
+        "resourceVersion": "4242",
+        "creationTimestamp": "2026-09-21T13:38:10Z",
+        "labels": {
+          "app.galaxyproject.org/job_id": "1500",
+          "app.galaxyproject.org/destination": "k8s",
+          "batch.kubernetes.io/job-name": "gxy-galaxy-ccccc"
+        },
+        "ownerReferences": [
+          {
+            "kind": "Job",
+            "name": "gxy-galaxy-ccccc",
+            "uid": "owner-uid-1",
+            "controller": true
+          }
+        ]
+      },
+      "spec": {
+        "nodeName": "autoscaled-node-1",
+        "containers": [
+          {
+            "name": "k8s",
+            "resources": {
+              "requests": {
+                "cpu": "1",
+                "memory": "4080218931200m"
+              },
+              "limits": {
+                "memory": "4080218931200m"
+              }
+            }
+          }
+        ],
+        "initContainers": [
+          {
+            "name": "setup",
+            "resources": {
+              "requests": {
+                "cpu": "500m",
+                "memory": "512Mi"
+              }
+            }
+          }
+        ]
+      },
+      "status": {
+        "phase": "Running",
+        "startTime": "2026-09-21T13:38:10Z",
+        "conditions": [
+          {
+            "type": "PodScheduled",
+            "status": "True",
+            "lastTransitionTime": "2026-09-21T13:38:12Z"
+          },
+          {
+            "type": "Ready",
+            "status": "False",
+            "reason": "PodCompleted",
+            "lastTransitionTime": "2026-09-21T13:38:52Z"
+          }
+        ],
+        "containerStatuses": [
+          {
+            "name": "k8s",
+            "restartCount": 0,
+            "lastState": {},
+            "state": {
+              "running": {
+                "startedAt": "2026-09-21T13:38:35Z"
+              }
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

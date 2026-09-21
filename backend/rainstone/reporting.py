@@ -12,7 +12,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from rainstone.auth import Identity
-from rainstone.costing import report_fingerprint
+from rainstone.costing import current_generation
 from rainstone.models import (
     CostLine,
     CostRevision,
@@ -22,10 +22,12 @@ from rainstone.models import (
     Invocation,
     InvocationJob,
     Job,
+    LifetimeAttempt,
+    ObservationGap,
     Owner,
     PriceVersion,
     Quality,
-    ResourceInterval,
+    ResourceLifetime,
     Tenant,
 )
 from rainstone.report_query import ReportQuery
@@ -56,7 +58,7 @@ def _revision(session: Session, identity: Identity, requested: str | None) -> Co
                 409,
                 "This snapshot is stale because report facts changed; refresh to select the latest revision",
             )
-    if revision and revision.input_digest != report_fingerprint(session, identity.tenant_id):
+    if revision and revision.facts_generation != current_generation(session, identity.tenant_id):
         raise HTTPException(
             409,
             "This snapshot is stale because reporting facts changed; refresh to recalculate costs",
@@ -87,7 +89,7 @@ def _quality(lines: list[CostLine]) -> str:
 
 
 def _line_slices(
-    line: CostLine, interval: ResourceInterval, as_of: datetime
+    line: CostLine, lifetime: ResourceLifetime, as_of: datetime
 ) -> list[tuple[datetime, datetime, Decimal | None]]:
     allocations = (line.details or {}).get("allocations") or []
     if allocations:
@@ -99,10 +101,10 @@ def _line_slices(
             (datetime.fromisoformat(value["start"]), datetime.fromisoformat(value["end"]), amount)
             for value, amount in zip(allocations, amounts, strict=True)
         ]
-    if interval.observed_start:
-        end = interval.observed_end or as_of
-        if end > interval.observed_start:
-            return [(interval.observed_start, end, line.amount)]
+    if lifetime.observed_start:
+        end = lifetime.observed_end or as_of
+        if end > lifetime.observed_start:
+            return [(lifetime.observed_start, end, line.amount)]
     return []
 
 
@@ -205,20 +207,34 @@ def _base_records(
     if candidate_count is not None:
         candidate_count.append(len(jobs))
     job_ids = [job.id for job, _ in jobs]
-    line_map: dict[uuid.UUID, list[tuple[CostLine, ResourceInterval, ExecutionAttempt]]] = defaultdict(list)
+    line_map: dict[uuid.UUID, list[tuple[CostLine, ResourceLifetime]]] = defaultdict(list)
+    attempt_map: dict[uuid.UUID, list[ExecutionAttempt]] = defaultdict(list)
+    lifetime_attempts: dict[uuid.UUID, list[ExecutionAttempt]] = defaultdict(list)
+    if job_ids:
+        for attempt in session.scalars(
+            select(ExecutionAttempt)
+            .where(ExecutionAttempt.job_id.in_(job_ids))
+            .order_by(ExecutionAttempt.source_attempt_id)
+        ):
+            attempt_map[attempt.job_id].append(attempt)
+        for lifetime_id, attempt in session.execute(
+            select(LifetimeAttempt.lifetime_id, ExecutionAttempt)
+            .join(ExecutionAttempt, LifetimeAttempt.attempt_id == ExecutionAttempt.id)
+            .where(ExecutionAttempt.job_id.in_(job_ids))
+        ):
+            lifetime_attempts[lifetime_id].append(attempt)
     if revision and job_ids:
         rows = session.execute(
-            select(CostLine, ResourceInterval, ExecutionAttempt)
-            .join(ResourceInterval, CostLine.resource_interval_id == ResourceInterval.id)
-            .join(ExecutionAttempt, CostLine.attempt_id == ExecutionAttempt.id)
+            select(CostLine, ResourceLifetime)
+            .join(ResourceLifetime, CostLine.lifetime_id == ResourceLifetime.id)
             .where(
                 CostLine.revision_id == revision.id,
                 CostLine.basis == query.basis,
                 CostLine.job_id.in_(job_ids),
             )
         )
-        for line, interval, attempt in rows:
-            line_map[line.job_id].append((line, interval, attempt))
+        for line, lifetime in rows:
+            line_map[line.job_id].append((line, lifetime))
 
     invocation_jobs: set[uuid.UUID] | None = None
     if query.invocation_id or query.workflow_id:
@@ -230,6 +246,7 @@ def _base_records(
         if invocation_jobs is not None and job.id not in invocation_jobs:
             continue
         pairs = line_map[job.id]
+        attempts = attempt_map[job.id]
         lines = [pair[0] for pair in pairs]
         quality = _quality(lines)
         known_amounts: list[Decimal] = []
@@ -237,9 +254,9 @@ def _base_records(
         capacities: set[str] = set()
         interval_hit = False
         has_timing = False
-        for line, interval, _ in pairs:
-            capacities.add(interval.capacity_relationship.value)
-            slices = _line_slices(line, interval, as_of)
+        for line, lifetime in pairs:
+            capacities.add(lifetime.capacity_relationship.value)
+            slices = _line_slices(line, lifetime, as_of)
             has_timing = has_timing or bool(slices)
             if not slices:
                 if line.amount is not None:
@@ -251,14 +268,14 @@ def _base_records(
                     if slice_amount is not None:
                         known_amounts.append(slice_amount * min(fraction, Decimal("1")))
         completions = [
-            pair[2].tool_finished_at for pair in pairs
-            if pair[2].outcome == "ok" and pair[2].tool_finished_at
+            attempt.tool_finished_at for attempt in attempts
+            if attempt.outcome == "ok" and attempt.tool_finished_at
         ]
         completed_at = max(completions) if completions else None
         if query.mode == "completed":
             if not completed_at or (query.from_time and completed_at < query.from_time) or (query.to_time and completed_at >= query.to_time):
                 continue
-            known_amounts = [line.amount for line, _, _ in pairs if line.amount is not None]
+            known_amounts = [line.amount for line, _ in pairs if line.amount is not None]
         elif (query.from_time or query.to_time) and pairs and has_timing and not interval_hit:
             continue
         amount = sum(known_amounts, ZERO) if known_amounts else None
@@ -289,20 +306,30 @@ def _base_records(
             "created_at": job.created_at, "updated_at": job.updated_at, "amount": amount,
             "currency": "USD", "quality": quality,
             "reason": " | ".join(sorted({line.reason for line in lines})) or "Awaiting cost calculation.",
-            "attempt_cost_lines": len(lines), "capacities": sorted(capacities),
+            "cost_lines": len(lines), "attempt_count": len(attempts),
+            "capacities": sorted(capacities),
             "unattributed_amount": unattributed,
             "temporally_unattributed": bool(pairs and not has_timing) or not pairs,
             "completed_at": completed_at,
             "full_amount": sum((line.amount for line in lines if line.amount is not None), ZERO)
             if any(line.amount is not None for line in lines) else None,
-            "job": job, "pairs": pairs,
+            "job": job, "pairs": pairs, "attempts": attempts,
+            "lifetime_attempts": lifetime_attempts,
         })
     return records, revision
 
 
 def _window(query: ReportQuery, records: list[dict]) -> dict:
-    starts = [pair[1].observed_start for record in records for pair in record["pairs"] if pair[1].observed_start]
-    ends = [pair[1].observed_end for record in records for pair in record["pairs"] if pair[1].observed_end]
+    starts = [
+        lifetime.observed_start
+        for record in records for _, lifetime in record["pairs"]
+        if lifetime.observed_start
+    ]
+    ends = [
+        lifetime.observed_end
+        for record in records for _, lifetime in record["pairs"]
+        if lifetime.observed_end
+    ]
     lower = query.from_time or (min(starts) if starts else None)
     upper = query.to_time or (max(ends) if ends else None)
     return {
@@ -333,7 +360,8 @@ def _meta(session: Session, identity: Identity, query: ReportQuery, revision, re
 def _public(record: dict) -> dict:
     return {
         key: str(value) if isinstance(value, Decimal) else value
-        for key, value in record.items() if key not in {"job", "pairs", "full_amount"}
+        for key, value in record.items()
+        if key not in {"job", "pairs", "attempts", "lifetime_attempts", "full_amount"}
     }
 
 
@@ -341,11 +369,11 @@ def summary(session: Session, identity: Identity, query: ReportQuery) -> dict:
     records, revision = _base_records(session, identity, query)
     meta = _meta(session, identity, query, revision, records)
     failed = sum((r["amount"] or ZERO for r in records if r["state"] in {"error", "failed"}), ZERO)
-    retried = sum((r["amount"] or ZERO for r in records if len({p[2].id for p in r["pairs"]}) > 1), ZERO)
+    retried = sum((r["amount"] or ZERO for r in records if r["attempt_count"] > 1), ZERO)
     tenant = session.get(Tenant, identity.tenant_id)
     infra = infrastructure(
         session, identity, query, revision=revision, snapshot_validated=True
-    ) if identity.is_admin else None
+    ) if identity.can_view_infrastructure else None
     return {
         **meta, "amount": meta["priced_subtotal"], "job_count": len(records),
         "priced_job_count": meta["coverage"]["priced"],
@@ -353,7 +381,7 @@ def summary(session: Session, identity: Identity, query: ReportQuery) -> dict:
         "known_zero_job_count": meta["coverage"]["known_zero"],
         "failed_spend": str(failed), "retried_spend": str(retried),
         "baseline_infrastructure_amount": infra["amount"] if infra else None,
-        "can_view_infrastructure": identity.is_admin,
+        "can_view_infrastructure": identity.can_view_infrastructure,
         "demo": bool((tenant.capabilities or {}).get("demo", True)),
     }
 
@@ -385,37 +413,77 @@ def job_detail(session: Session, identity: Identity, job_id: uuid.UUID, query: R
         return None
     full_records, _ = _base_records(session, identity, unrestricted.model_copy(update={"from_time": None, "to_time": None}))
     full = next(r for r in full_records if r["id"] == str(job_id))
-    grouped: dict[uuid.UUID, list[tuple]] = defaultdict(list)
-    for pair in record["pairs"]:
-        grouped[pair[2].id].append(pair)
+    lifetime_attempts = record["lifetime_attempts"]
+    resources = []
+    charged_alone: dict[uuid.UUID, dict] = {}
+    for line, lifetime in record["pairs"]:
+        sharing = sorted(
+            lifetime_attempts.get(lifetime.id, []), key=lambda value: value.source_attempt_id
+        )
+        entry = {
+            "lifetime_id": str(lifetime.id),
+            "resource_key": lifetime.resource_key,
+            "resource_uid": lifetime.resource_uid,
+            "provider": lifetime.provider,
+            "machine_type": lifetime.machine_type,
+            "region": lifetime.region,
+            "zone": lifetime.zone,
+            "purchase_model": lifetime.purchase_model,
+            "capacity_relationship": lifetime.capacity_relationship.value,
+            "resource_started_at": lifetime.observed_start,
+            "resource_finished_at": lifetime.observed_end,
+            "timing_method": lifetime.timing_method,
+            "requested_vcpu": str(lifetime.requested_vcpu) if lifetime.requested_vcpu is not None else None,
+            "requested_memory_mib": (
+                str(lifetime.requested_memory_mib)
+                if lifetime.requested_memory_mib is not None
+                else None
+            ),
+            "provisioned": lifetime.facts,
+            "amount": str(line.amount) if line.amount is not None else None,
+            "quality": _quality([line]),
+            "reason": line.reason,
+            "provenance": line.details,
+            "shared_attempt_ids": [str(attempt.id) for attempt in sharing],
+            "shared_attempt_count": len(sharing),
+        }
+        resources.append(entry)
+        if len(sharing) == 1:
+            charged_alone[sharing[0].id] = entry
     attempts = []
-    for attempt_id, pairs in grouped.items():
-        attempt, interval = pairs[0][2], pairs[0][1]
+    for attempt in record["attempts"]:
+        used = [
+            entry for entry in resources
+            if str(attempt.id) in entry["shared_attempt_ids"]
+        ]
+        alone = charged_alone.get(attempt.id)
         attempts.append({
-            "id": str(attempt_id), "source_attempt_id": attempt.source_attempt_id,
+            "id": str(attempt.id), "source_attempt_id": attempt.source_attempt_id,
             "runner": attempt.runner, "outcome": attempt.outcome,
-            "tool_started_at": attempt.tool_started_at, "tool_finished_at": attempt.tool_finished_at,
-            "resource_started_at": interval.observed_start, "resource_finished_at": interval.observed_end,
-            "requested_vcpu": str(interval.requested_vcpu) if interval.requested_vcpu is not None else None,
-            "requested_memory_mib": str(interval.requested_memory_mib) if interval.requested_memory_mib is not None else None,
-            "provisioned": interval.facts, "machine_type": interval.machine_type,
-            "capacity_relationship": interval.capacity_relationship.value,
-            "amount": str(sum((p[0].amount for p in pairs if p[0].amount is not None), ZERO))
-            if any(p[0].amount is not None for p in pairs) else None,
-            "quality": _quality([p[0] for p in pairs]),
-            "reason": " | ".join(sorted({p[0].reason for p in pairs})),
-            "provenance": [p[0].details for p in pairs],
+            "provider_outcome": attempt.provider_outcome, "exit_code": attempt.exit_code,
+            "task_index": attempt.task_index, "attempt_ordinal": attempt.attempt_ordinal,
+            "tool_started_at": attempt.tool_started_at,
+            "tool_finished_at": attempt.tool_finished_at,
+            "resource_keys": [entry["resource_key"] for entry in used],
+            # A lifetime shared by retries is charged once; its amount appears
+            # on the resource, not repeated on each attempt row.
+            "amount": alone["amount"] if alone else None,
+            "amount_shared_with_attempts": [
+                other for entry in used for other in entry["shared_attempt_ids"]
+                if len(entry["shared_attempt_ids"]) > 1 and other != str(attempt.id)
+            ],
         })
     result = _public(record)
     result.update({
         "interval_amount": result["amount"],
         "full_job_amount": str(full["amount"]) if full["amount"] is not None else None,
-        "basis": query.basis, "attempts": attempts,
+        "basis": query.basis, "attempts": attempts, "resources": resources,
         "revision_id": str(revision.id) if revision else None,
     })
     result["cost"] = {
         "basis": query.basis, "amount": result["interval_amount"], "currency": "USD",
-        "quality": result["quality"], "reason": result["reason"], "attempts": attempts,
+        "quality": result["quality"], "reason": result["reason"],
+        "attempts": attempts, "resources": resources,
     }
     return result
 
@@ -566,8 +634,8 @@ def daily(session: Session, identity: Identity, query: ReportQuery) -> dict:
             bucket["by_owner"][record["owner"]] += amount
             bucket["by_tool"][f"{record['tool_id']}@{record['tool_version'] or ''}"] += amount
             continue
-        for line, interval, _ in record["pairs"]:
-            for start, end, slice_amount in _line_slices(line, interval, as_of):
+        for line, lifetime in record["pairs"]:
+            for start, end, slice_amount in _line_slices(line, lifetime, as_of):
                 total_seconds = Decimal(str((end - start).total_seconds()))
                 cursor = max(start, query.from_time or start)
                 limit = min(end, query.to_time or end)
@@ -580,7 +648,7 @@ def daily(session: Session, identity: Identity, query: ReportQuery) -> dict:
                     key = local.date().isoformat()
                     bucket = buckets[key]
                     bucket["job_ids"].add(record["id"])
-                    bucket["provisional"] = bucket["provisional"] or interval.observed_end is None
+                    bucket["provisional"] = bucket["provisional"] or lifetime.observed_end is None
                     if slice_amount is None:
                         bucket["incomplete_ids"].add(record["id"])
                         cursor = chunk_end
@@ -637,8 +705,8 @@ def infrastructure(
     revision: CostRevision | None = None,
     snapshot_validated: bool = False,
 ) -> dict:
-    if not identity.is_admin:
-        raise HTTPException(403, "Infrastructure reporting requires administrator scope")
+    if not identity.can_view_infrastructure:
+        raise HTTPException(403, "Infrastructure reporting is not authorized for this scope")
     if not snapshot_validated:
         revision = _revision(session, identity, query.revision)
     rows = session.scalars(
@@ -702,11 +770,28 @@ def freshness(session: Session, identity: Identity) -> dict:
             "last_success_at": price.observed_at,
             "cursor": {"catalog_id": price.catalog_id}, "error": None,
         })
+    gaps = session.scalars(
+        select(ObservationGap)
+        .where(ObservationGap.tenant_id == identity.tenant_id)
+        .order_by(ObservationGap.detected_at.desc())
+        .limit(20)
+    ).all()
     statuses = {source["status"] for source in sources}
     overall = "failed" if "failed" in statuses else (
         "partial" if statuses - {"healthy", "historical_snapshot"} else "healthy"
     )
-    return {"sources": sources, "overall_status": overall}
+    return {
+        "sources": sources,
+        "overall_status": overall,
+        "observation_gaps": [
+            {
+                "source": gap.source, "kind": gap.kind, "detected_at": gap.detected_at,
+                "gap_start": gap.gap_start, "gap_end": gap.gap_end,
+                "recoverable": gap.recoverable, "detail": gap.detail,
+            }
+            for gap in gaps
+        ],
+    }
 
 
 def export_csv(session: Session, identity: Identity, query: ReportQuery):

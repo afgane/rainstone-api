@@ -5,11 +5,13 @@ from decimal import Decimal
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     Boolean,
     DateTime,
     Enum,
     ForeignKey,
     Index,
+    Integer,
     Numeric,
     String,
     Text,
@@ -48,6 +50,44 @@ class Tenant(Base):
     synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class SourceBinding(Base):
+    """Binds a tenant's seeded instance identity to one source database.
+
+    A replaced Galaxy database must not inherit an old instance identity only
+    because the VM or Helm release name was reused, so the collector refuses to
+    run when the recorded source fingerprint no longer matches.
+    """
+
+    __tablename__ = "source_binding"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tenant.id", ondelete="CASCADE"), unique=True
+    )
+    instance_uuid: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), unique=True)
+    source_kind: Mapped[str] = mapped_column(String(40))
+    source_fingerprint: Mapped[str] = mapped_column(String(200))
+    source_version: Mapped[str | None] = mapped_column(String(100))
+    descriptor: Mapped[dict] = mapped_column(JSON, default=dict)
+    bound_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class ReportGeneration(Base):
+    """Per-tenant marker advanced whenever report-affecting facts change.
+
+    Database triggers maintain it, so a direct write that bypasses the
+    application still invalidates pinned report snapshots. Comparing this
+    marker costs one small read per request, where hashing every fact row
+    would cost a multiple of the job count.
+    """
+
+    __tablename__ = "report_generation"
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tenant.id", ondelete="CASCADE"), primary_key=True
+    )
+    generation: Mapped[int] = mapped_column(BigInteger, default=1)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class Owner(Base):
     __tablename__ = "owner"
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
@@ -67,18 +107,43 @@ class Job(Base):
     tool_id: Mapped[str] = mapped_column(String(500))
     tool_version: Mapped[str | None] = mapped_column(String(100))
     state: Mapped[str] = mapped_column(String(40))
+    exit_code: Mapped[int | None] = mapped_column(Integer)
     runner: Mapped[str | None] = mapped_column(String(100))
     destination: Mapped[str | None] = mapped_column(String(200))
+    handler: Mapped[str | None] = mapped_column(String(200))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     copied_from_source_id: Mapped[str | None] = mapped_column(String(200))
+    resource_hints: Mapped[dict] = mapped_column(JSON, default=dict)
     owner: Mapped[Owner] = relationship()
     attempts: Mapped[list["ExecutionAttempt"]] = relationship(cascade="all, delete-orphan")
     __table_args__ = (
         UniqueConstraint("tenant_id", "source_id"),
         Index("ix_job_tenant_owner_created", "tenant_id", "owner_id", "created_at"),
         Index("ix_job_tool_version", "tenant_id", "tool_id", "tool_version"),
+        Index("ix_job_tenant_updated", "tenant_id", "updated_at"),
     )
+
+
+class JobStateEvent(Base):
+    __tablename__ = "job_state_event"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    job_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("job.id", ondelete="CASCADE"))
+    state: Mapped[str] = mapped_column(String(40))
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    __table_args__ = (UniqueConstraint("job_id", "state", "occurred_at"),)
+
+
+class JobMetric(Base):
+    """Allowlisted numeric Galaxy metrics, with their runner-specific units."""
+
+    __tablename__ = "job_metric"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    job_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("job.id", ondelete="CASCADE"))
+    plugin: Mapped[str] = mapped_column(String(80))
+    name: Mapped[str] = mapped_column(String(200))
+    numeric_value: Mapped[Decimal] = mapped_column(Numeric(30, 6))
+    __table_args__ = (UniqueConstraint("job_id", "plugin", "name"),)
 
 
 class Invocation(Base):
@@ -88,10 +153,12 @@ class Invocation(Base):
     owner_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("owner.id"))
     source_id: Mapped[str] = mapped_column(String(200))
     workflow_id: Mapped[str | None] = mapped_column(String(300))
+    workflow_family_id: Mapped[str | None] = mapped_column(String(300))
     parent_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("invocation.id"))
     workflow_name: Mapped[str] = mapped_column(String(300))
     workflow_version: Mapped[str | None] = mapped_column(String(100))
     state: Mapped[str] = mapped_column(String(40))
+    membership_settled: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     __table_args__ = (
         UniqueConstraint("tenant_id", "source_id"),
@@ -138,6 +205,23 @@ class PriceVersion(Base):
     __table_args__ = (UniqueConstraint("catalog_id", "machine_type", "region", "purchase_model"),)
 
 
+class CatalogVersion(Base):
+    """An immutable imported price catalog artifact and its provenance."""
+
+    __tablename__ = "catalog_version"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    catalog_id: Mapped[str] = mapped_column(String(200), unique=True)
+    schema_version: Mapped[int] = mapped_column(Integer)
+    artifact_digest: Mapped[str] = mapped_column(String(64))
+    signature_key_id: Mapped[str | None] = mapped_column(String(200))
+    source: Mapped[str] = mapped_column(String(500))
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    imported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    active: Mapped[bool] = mapped_column(Boolean, default=False)
+    rate_count: Mapped[int] = mapped_column(Integer, default=0)
+    provenance: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
 class ExecutionAttempt(Base):
     __tablename__ = "execution_attempt"
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
@@ -147,18 +231,32 @@ class ExecutionAttempt(Base):
     runner: Mapped[str] = mapped_column(String(100))
     external_id: Mapped[str | None] = mapped_column(String(500))
     outcome: Mapped[str] = mapped_column(String(40))
+    provider_outcome: Mapped[str | None] = mapped_column(String(40))
+    exit_code: Mapped[int | None] = mapped_column(Integer)
+    task_index: Mapped[int | None] = mapped_column(Integer)
+    attempt_ordinal: Mapped[int | None] = mapped_column(Integer)
     tool_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     tool_finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    facts: Mapped[dict] = mapped_column(JSON, default=dict)
     __table_args__ = (UniqueConstraint("job_id", "source_attempt_id"),)
 
 
-class ResourceInterval(Base):
-    __tablename__ = "resource_interval"
+class ResourceLifetime(Base):
+    """One chargeable provider resource lifetime.
+
+    A lifetime is priced once per basis and component. Retries that reuse the
+    same VM associate several attempts with this one record instead of storing
+    and pricing the whole lifetime again under each attempt.
+    """
+
+    __tablename__ = "resource_lifetime"
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
-    attempt_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("execution_attempt.id", ondelete="CASCADE"))
-    source_interval_id: Mapped[str] = mapped_column(String(300))
-    resource_uid: Mapped[str] = mapped_column(String(300))
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenant.id", ondelete="CASCADE"))
     provider: Mapped[str] = mapped_column(String(40))
+    resource_key: Mapped[str] = mapped_column(String(400))
+    resource_uid: Mapped[str] = mapped_column(String(300))
+    project: Mapped[str | None] = mapped_column(String(200))
+    zone: Mapped[str | None] = mapped_column(String(100))
     region: Mapped[str | None] = mapped_column(String(100))
     machine_type: Mapped[str | None] = mapped_column(String(100))
     purchase_model: Mapped[str | None] = mapped_column(String(40))
@@ -171,7 +269,42 @@ class ResourceInterval(Base):
     requested_vcpu: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))
     requested_memory_mib: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
     facts: Mapped[dict] = mapped_column(JSON, default=dict)
-    __table_args__ = (UniqueConstraint("attempt_id", "source_interval_id"),)
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "provider", "resource_key"),
+        Index("ix_resource_lifetime_tenant", "tenant_id", "observed_start"),
+    )
+
+
+class ResourceSegment(Base):
+    """A disjoint accounting segment of one resource lifetime."""
+
+    __tablename__ = "resource_segment"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    lifetime_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("resource_lifetime.id", ondelete="CASCADE")
+    )
+    source_segment_id: Mapped[str] = mapped_column(String(300))
+    observed_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    observed_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    timing_method: Mapped[str | None] = mapped_column(String(200))
+    facts: Mapped[dict] = mapped_column(JSON, default=dict)
+    __table_args__ = (UniqueConstraint("lifetime_id", "source_segment_id"),)
+
+
+class LifetimeAttempt(Base):
+    """Associates an execution attempt with the resource lifetime it used."""
+
+    __tablename__ = "lifetime_attempt"
+    lifetime_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("resource_lifetime.id", ondelete="CASCADE"), primary_key=True
+    )
+    attempt_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("execution_attempt.id", ondelete="CASCADE"), primary_key=True
+    )
+    task_index: Mapped[int | None] = mapped_column(Integer)
+    attempt_ordinal: Mapped[int | None] = mapped_column(Integer)
+    correlation: Mapped[str] = mapped_column(String(80), default="provider_event")
+    facts: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
 class CostRevision(Base):
@@ -180,6 +313,7 @@ class CostRevision(Base):
     tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenant.id", ondelete="CASCADE"))
     calculation_version: Mapped[str] = mapped_column(String(100))
     input_digest: Mapped[str] = mapped_column(String(64))
+    facts_generation: Mapped[int] = mapped_column(BigInteger, default=0)
     reason: Mapped[str] = mapped_column(String(200))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     __table_args__ = (UniqueConstraint("tenant_id", "calculation_version", "input_digest"),)
@@ -190,9 +324,11 @@ class CostLine(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
     revision_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("cost_revision.id", ondelete="CASCADE"))
     job_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("job.id", ondelete="CASCADE"))
-    attempt_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("execution_attempt.id", ondelete="CASCADE"))
-    resource_interval_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("resource_interval.id", ondelete="CASCADE")
+    lifetime_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("resource_lifetime.id", ondelete="CASCADE")
+    )
+    attempt_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("execution_attempt.id", ondelete="CASCADE")
     )
     basis: Mapped[str] = mapped_column(String(40))
     component: Mapped[str] = mapped_column(String(80))
@@ -204,7 +340,7 @@ class CostLine(Base):
     policy_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("deployment_policy.id"))
     details: Mapped[dict] = mapped_column(JSON, default=dict)
     __table_args__ = (
-        UniqueConstraint("revision_id", "resource_interval_id", "basis", "component"),
+        UniqueConstraint("revision_id", "lifetime_id", "job_id", "basis", "component"),
         Index("ix_cost_line_job_basis", "job_id", "basis"),
     )
 
@@ -245,5 +381,23 @@ class IngestionState(Base):
     cursor: Mapped[dict] = mapped_column(JSON, default=dict)
     status: Mapped[str] = mapped_column(String(40))
     last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    consecutive_failures: Mapped[int] = mapped_column(Integer, default=0)
+    metrics: Mapped[dict] = mapped_column(JSON, default=dict)
     error: Mapped[str | None] = mapped_column(Text)
     __table_args__ = (UniqueConstraint("tenant_id", "source"),)
+
+
+class ObservationGap(Base):
+    """A recorded loss of observation coverage that reports must not hide."""
+
+    __tablename__ = "observation_gap"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenant.id", ondelete="CASCADE"))
+    source: Mapped[str] = mapped_column(String(80))
+    kind: Mapped[str] = mapped_column(String(80))
+    detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    gap_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    gap_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    recoverable: Mapped[bool] = mapped_column(Boolean, default=False)
+    detail: Mapped[str] = mapped_column(Text)

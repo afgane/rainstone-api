@@ -1,5 +1,6 @@
 export type Basis = "additional" | "allocated";
-export type View = "overview" | "jobs" | "tools" | "invocations" | "daily" | "users" | "infrastructure";
+export type View =
+  | "overview" | "jobs" | "tools" | "invocations" | "daily" | "users" | "infrastructure" | "status";
 
 export interface ReportState {
   view: View;
@@ -54,7 +55,7 @@ export interface Job {
   id: string; source_id: string; tool_id: string; tool_version: string | null;
   owner: string; owner_id: string; state: string; runner: string | null;
   destination: string | null; created_at: string; amount: string | null; currency: string;
-  quality: string; reason: string; attempt_cost_lines: number;
+  quality: string; reason: string; cost_lines: number; attempt_count: number;
 }
 
 export interface Invocation {
@@ -79,19 +80,40 @@ export interface DailyItem {
 export interface Freshness {
   overall_status: string;
   sources: Array<{ source: string; status: string; last_success_at: string; error: string | null }>;
+  observation_gaps: Array<{ source: string; kind: string; detected_at: string; recoverable: boolean; detail: string }>;
 }
 
 export interface Me {
   source_id: string; label: string; is_admin: boolean;
+  auth_mode: string; attribution: string;
   capabilities: { infrastructure: boolean; users: boolean };
 }
 
-const identityHeaders = {
-  "X-Rainstone-Tenant": "anvil-demo", "X-Rainstone-User": "admin", "X-Rainstone-Admin": "true",
-};
+export interface StatusCheck {
+  name: string; status: string; detail: string; facts: Record<string, unknown>;
+}
+
+export interface Status {
+  generated_at: string; overall_status: string; auth_mode: string; tenant: string;
+  checks: StatusCheck[]; failed_capabilities: string[];
+}
+
+function meta(name: string): string {
+  return document.querySelector<HTMLMetaElement>(`meta[name="${name}"]`)?.content || "";
+}
+
+// Deployed modes resolve identity on the server; only the development fixture
+// adapter accepts these headers, so production requests never carry them.
+const identityHeaders: Record<string, string> = meta("rainstone-auth-mode") === "development"
+  ? { "X-Rainstone-Tenant": "anvil-demo", "X-Rainstone-User": "admin", "X-Rainstone-Admin": "true" }
+  : {};
+
+export function authMode(): string {
+  return meta("rainstone-auth-mode") || "development";
+}
 
 function apiPath(path: string): string {
-  const base = document.querySelector<HTMLMetaElement>('meta[name="rainstone-base"]')?.content || "/";
+  const base = meta("rainstone-base") || "/";
   return `${base.replace(/\/$/, "")}/api${path}`;
 }
 
@@ -166,9 +188,14 @@ export async function loadReport(state: ReportState, signal?: AbortSignal) {
     : state.view === "daily" ? get<{ items: DailyItem[]; meta: Meta }>(`/daily?${query}`, signal)
     : state.view === "users" ? get<{ items: GroupItem[]; meta: Meta }>(`/users?${query}`, signal)
     : state.view === "infrastructure" ? get<{ items: Array<Record<string, string>>; amount: string | null; scope: string; allocation_reason: string }>(`/infrastructure?${query}`, signal)
+    : state.view === "status" ? get<Status>("/status", signal)
     : Promise.resolve(null);
   const [jobs, freshness, me, view] = await Promise.all([...common, viewRequest]);
   return { summary, jobs, freshness, me, view };
+}
+
+export function diagnosticsUrl(): string {
+  return apiPath("/status/download");
 }
 
 export async function downloadExport(state: ReportState): Promise<void> {

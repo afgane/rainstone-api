@@ -1,0 +1,25 @@
+{{- if .Values.networkPolicy.enabled }}
+{{/*
+In-cluster restriction only. It cannot prove that a request was admitted by the
+platform's external authenticated route.
+*/}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "rainstone.fullname" . }}-web
+  labels: {{- include "rainstone.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "rainstone.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: web
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.ingressNamespace }}
+      ports:
+        - port: 8000
+{{- end }}

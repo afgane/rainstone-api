@@ -1,0 +1,23 @@
+Rainstone {{ .Chart.AppVersion }} is installed as {{ include "rainstone.fullname" . }}.
+
+Reports are served under {{ .Values.basePath }} on the existing ingress; this
+release adds no separate public address.
+
+Identity mode: {{ .Values.auth.mode }}.
+{{- if eq .Values.auth.mode "anvil-workspace" }}
+Every request reports the fixed shared Galaxy account
+{{ .Values.auth.workspaceOwner | default "(unset - run rainstone bootstrap)" }}.
+Attribution is to that account, not to individual workspace members.
+{{- end }}
+
+{{- if not .Values.source.dsnSecret }}
+No Galaxy source credential is configured yet, so nothing will be collected. Run:
+
+  rainstone bootstrap --admin-database-url <installation DSN> \
+      --shared-account <galaxy account> --write-dsn /secrets/dsn
+
+and set `source.dsnSecret` to the Secret holding that DSN.
+{{- end }}
+
+Check the deployment with `rainstone doctor` in the collector pod, or open
+{{ .Values.basePath }}/?view=status through the normal authenticated route.

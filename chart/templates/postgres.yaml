@@ -1,0 +1,85 @@
+{{- if and .Values.database.deploy (not .Values.database.existingSecret) }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "rainstone.fullname" . }}-postgres
+  labels: {{- include "rainstone.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: 5432
+      targetPort: postgres
+  selector:
+    app.kubernetes.io/name: {{ include "rainstone.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: database
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "rainstone.fullname" . }}-postgres
+  labels: {{- include "rainstone.labels" . | nindent 4 }}
+  {{- if .Values.database.retainOnDelete }}
+  annotations:
+    # Reporting history survives `helm uninstall` unless it is removed on purpose.
+    helm.sh/resource-policy: keep
+  {{- end }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  {{- if .Values.database.storageClass }}
+  storageClassName: {{ .Values.database.storageClass }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.database.size }}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "rainstone.fullname" . }}-postgres
+  labels: {{- include "rainstone.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "rainstone.fullname" . }}-postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "rainstone.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: database
+  template:
+    metadata:
+      labels:
+        {{- include "rainstone.labels" . | nindent 8 }}
+        app.kubernetes.io/component: database
+    spec:
+      containers:
+        - name: postgres
+          image: {{ .Values.database.image }}
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              value: {{ .Values.database.name }}
+            - name: POSTGRES_USER
+              value: {{ .Values.database.user }}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "rainstone.databaseSecret" . }}
+                  key: password
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", {{ .Values.database.user | quote }}, "-d", {{ .Values.database.name | quote }}]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "rainstone.fullname" . }}-postgres
+{{- end }}

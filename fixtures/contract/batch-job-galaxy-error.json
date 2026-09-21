@@ -1,0 +1,61 @@
+{
+  "name": "projects/demo-project/locations/us-east4/jobs/galaxy-batch-demo-53",
+  "uid": "galaxy-batch-demo-53-uid",
+  "status": {
+    "state": "SUCCEEDED",
+    "statusEvents": [],
+    "taskGroups": {
+      "group0": {
+        "counts": {
+          "SUCCEEDED": "1"
+        },
+        "instances": [
+          {
+            "machineType": "n2-highmem-4",
+            "provisioningModel": "STANDARD"
+          }
+        ]
+      }
+    }
+  },
+  "labels": {
+    "galaxy-job-id": "53",
+    "galaxy-runner": "gcp-batch"
+  },
+  "task_groups": [
+    {
+      "computeResource": {
+        "cpuMilli": "4000",
+        "memoryMib": "32768"
+      }
+    }
+  ],
+  "tasks": [
+    {
+      "name": ".../tasks/0",
+      "status": {
+        "state": "SUCCEEDED",
+        "statusEvents": [
+          {
+            "description": "Task state is updated from PENDING to ASSIGNED on zones/us-east4-c/instances/1111111111111111111",
+            "eventTime": "2026-09-21T12:00:00.000000Z",
+            "type": "CREATED",
+            "taskState": "ASSIGNED"
+          },
+          {
+            "description": "Task state is updated from ASSIGNED to RUNNING on zones/us-east4-c/instances/1111111111111111111",
+            "eventTime": "2026-09-21T12:00:05.000000Z",
+            "type": "RUNNING",
+            "taskState": "RUNNING"
+          },
+          {
+            "description": "Task state is updated from RUNNING to SUCCEEDED on zones/us-east4-c/instances/1111111111111111111",
+            "eventTime": "2026-09-21T12:03:05.000000Z",
+            "type": "SUCCEEDED",
+            "taskState": "SUCCEEDED"
+          }
+        ]
+      }
+    }
+  ]
+}

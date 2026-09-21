@@ -1,0 +1,128 @@
+{
+  "name": "projects/demo-project/locations/us-east4/jobs/galaxy-batch-demo-336",
+  "uid": "galaxy-batch-demo-336-uid",
+  "createTime": "2026-09-21T13:07:44.053154188Z",
+  "updateTime": "2026-09-21T13:17:12.237954412Z",
+  "status": {
+    "state": "SUCCEEDED",
+    "statusEvents": [
+      {
+        "description": "Job state is set from QUEUED to SCHEDULED.",
+        "eventTime": "2026-09-21T13:07:55.094493755Z",
+        "type": "STATUS_CHANGED"
+      },
+      {
+        "description": "Job state is set from SCHEDULED to RUNNING.",
+        "eventTime": "2026-09-21T13:09:09.481847057Z",
+        "type": "STATUS_CHANGED"
+      },
+      {
+        "description": "Job state is set from RUNNING to SUCCEEDED.",
+        "eventTime": "2026-09-21T13:17:12.237954412Z",
+        "type": "STATUS_CHANGED"
+      }
+    ],
+    "taskGroups": {
+      "group0": {
+        "counts": {
+          "SUCCEEDED": "1"
+        },
+        "instances": [
+          {
+            "machineType": "n2-standard-8",
+            "provisioningModel": "STANDARD",
+            "taskPack": "1"
+          }
+        ]
+      }
+    },
+    "runDuration": "482.756107355s"
+  },
+  "labels": {
+    "galaxy-tool-id": "toolshed-g2-bx-psu-edu-repos-goeckslab-image-learner",
+    "galaxy-handler": "job-handler-0",
+    "galaxy-runner": "gcp-batch",
+    "galaxy-job-id": "336"
+  },
+  "error": null,
+  "message": null,
+  "instances_policy": [
+    {
+      "policy": {
+        "machineType": "n2-standard-8"
+      }
+    }
+  ],
+  "task_groups": [
+    {
+      "taskCount": "1",
+      "parallelism": "1",
+      "computeResource": {
+        "cpuMilli": "8000",
+        "memoryMib": "32768"
+      },
+      "maxRetryCount": 3
+    }
+  ],
+  "tasks": [
+    {
+      "name": "projects/demo-project/locations/us-east4/jobs/galaxy-batch-demo-336/taskGroups/group0/tasks/0",
+      "status": {
+        "state": "SUCCEEDED",
+        "statusEvents": [
+          {
+            "eventTime": "2026-09-21T13:07:56.686471739Z",
+            "type": "CREATED",
+            "taskState": "PENDING"
+          },
+          {
+            "description": "Task state is updated from PENDING to ASSIGNED on zones/us-east4-c/instances/8649021727128195799",
+            "eventTime": "2026-09-21T13:09:09.481842897Z",
+            "type": "CREATED",
+            "taskState": "ASSIGNED"
+          },
+          {
+            "description": "Task state is updated from ASSIGNED to RUNNING on zones/us-east4-c/instances/8649021727128195799",
+            "eventTime": "2026-09-21T13:09:09.481847057Z",
+            "type": "RUNNING",
+            "taskState": "RUNNING"
+          },
+          {
+            "description": "Task state is updated from RUNNING to FAILED on zones/us-east4-c/instances/8649021727128195799 with exit code 125.",
+            "eventTime": "2026-09-21T13:09:26.323193912Z",
+            "type": "FAILED",
+            "taskExecution": {
+              "exitCode": 125
+            },
+            "taskState": "FAILED"
+          },
+          {
+            "description": "Attempt 0 failed on zones/us-east4-c/instances/8649021727128195799 with exit code 125.",
+            "eventTime": "2026-09-21T13:09:29.488806557Z",
+            "type": "RETRIED",
+            "taskState": "PENDING"
+          },
+          {
+            "description": "Task state is updated from PENDING to ASSIGNED on zones/us-east4-c/instances/8649021727128195799",
+            "eventTime": "2026-09-21T13:09:59.503755347Z",
+            "type": "CREATED",
+            "taskState": "ASSIGNED"
+          },
+          {
+            "description": "Task state is updated from ASSIGNED to RUNNING on zones/us-east4-c/instances/8649021727128195799",
+            "eventTime": "2026-09-21T13:09:59.503759380Z",
+            "type": "RUNNING",
+            "taskState": "RUNNING"
+          },
+          {
+            "description": "Task state is updated from RUNNING to SUCCEEDED on zones/us-east4-c/instances/8649021727128195799",
+            "eventTime": "2026-09-21T13:17:12.237954412Z",
+            "type": "SUCCEEDED",
+            "taskState": "SUCCEEDED"
+          }
+        ]
+      }
+    }
+  ],
+  "live_instances": []
+}

@@ -1,0 +1,36 @@
+{{/*
+Migrations run as an explicit one-shot step before new application pods become
+ready, on install and on upgrade.
+*/}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "rainstone.fullname" . }}-migrate-{{ .Release.Revision }}
+  labels: {{- include "rainstone.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "-5"
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        {{- include "rainstone.labels" . | nindent 8 }}
+        app.kubernetes.io/component: migrate
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "rainstone.serviceAccountName" . }}
+      containers:
+        - name: migrate
+          image: {{ include "rainstone.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - sh
+            - -c
+            - >-
+              alembic upgrade head &&
+              rainstone catalog refresh &&
+              { rainstone doctor || true; }
+          env: {{- include "rainstone.env" . | nindent 12 }}
+          resources: {{- toYaml .Values.web.resources | nindent 12 }}

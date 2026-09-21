@@ -1,0 +1,39 @@
+{
+  "items": [
+    {
+      "metadata": {
+        "name": "galaxy-baseline-vm",
+        "labels": {
+          "topology.kubernetes.io/region": "us-central1",
+          "topology.kubernetes.io/zone": "us-central1-a"
+        }
+      },
+      "spec": {},
+      "status": {
+        "capacity": {
+          "cpu": "4",
+          "memory": "16116040Ki"
+        }
+      }
+    },
+    {
+      "metadata": {
+        "name": "autoscaled-node-1",
+        "labels": {
+          "topology.kubernetes.io/region": "us-central1",
+          "topology.kubernetes.io/zone": "us-central1-a",
+          "node.kubernetes.io/instance-type": "n2-standard-2"
+        }
+      },
+      "spec": {
+        "providerID": "gce://demo-project/us-central1-a/autoscaled-node-1"
+      },
+      "status": {
+        "capacity": {
+          "cpu": "2",
+          "memory": "8065736Ki"
+        }
+      }
+    }
+  ]
+}

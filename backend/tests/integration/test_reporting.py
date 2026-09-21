@@ -41,14 +41,29 @@ def test_cross_runner_retry_is_one_job_with_attempt_costs_summed(client) -> None
     items = client.get("/api/jobs?basis=additional", headers=headers("alice")).json()["items"]
     retried = next(item for item in items if item["source_id"] == "22")
     assert Decimal(retried["amount"]) == Decimal("0.001618633333")
-    assert retried["attempt_cost_lines"] == 2
+    assert retried["cost_lines"] == 2
+    assert retried["attempt_count"] == 2
     assert retried["quality"] == "approximate"
     detail = client.get(f"/api/jobs/{retried['id']}?basis=additional", headers=headers("alice")).json()
     assert len(detail["cost"]["attempts"]) == 2
-    assert {attempt["quality"] for attempt in detail["cost"]["attempts"]} == {
+    assert {resource["quality"] for resource in detail["cost"]["resources"]} == {
         "known_zero",
         "approximate",
     }
+
+
+def test_same_vm_retry_is_charged_once_and_shown_as_shared(client) -> None:
+    items = client.get("/api/jobs?basis=additional&limit=50", headers=headers("alice")).json()["items"]
+    retried = next(item for item in items if item["source_id"] == "28")
+    assert retried["attempt_count"] == 2
+    # Two attempts reused one VM, so exactly one lifetime is charged.
+    assert retried["cost_lines"] == 1
+    assert Decimal(retried["amount"]) == Decimal("0.039769017510")
+    detail = client.get(f"/api/jobs/{retried['id']}?basis=additional", headers=headers("alice")).json()
+    assert len(detail["resources"]) == 1
+    assert detail["resources"][0]["shared_attempt_count"] == 2
+    assert [attempt["amount"] for attempt in detail["attempts"]] == [None, None]
+    assert all(attempt["amount_shared_with_attempts"] for attempt in detail["attempts"])
 
 
 def test_mixed_and_nested_invocations_are_deduplicated(client) -> None:

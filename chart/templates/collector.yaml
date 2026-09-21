@@ -1,0 +1,46 @@
+{{- if .Values.collector.enabled }}
+{{/*
+The collector is a separate workload so it can restart independently of the
+web process, and holds the source and observation credentials the web process
+does not need. One replica per instance: it also takes a database lease.
+*/}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "rainstone.fullname" . }}-collector
+  labels: {{- include "rainstone.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "rainstone.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: collector
+  template:
+    metadata:
+      labels:
+        {{- include "rainstone.labels" . | nindent 8 }}
+        app.kubernetes.io/component: collector
+    spec:
+      serviceAccountName: {{ include "rainstone.serviceAccountName" . }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+      containers:
+        - name: collector
+          image: {{ include "rainstone.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["rainstone", "collect"]
+          env:
+            {{- include "rainstone.env" . | nindent 12 }}
+            {{- include "rainstone.collectorEnv" . | nindent 12 }}
+          livenessProbe:
+            exec:
+              command: ["rainstone", "doctor"]
+            initialDelaySeconds: 60
+            periodSeconds: 120
+            timeoutSeconds: 30
+          resources: {{- toYaml .Values.collectorResources | nindent 12 }}
+{{- end }}

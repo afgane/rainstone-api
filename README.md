@@ -1,17 +1,28 @@
 # Rainstone v2
 
 Rainstone reports estimated compute cost for work already performed by Galaxy.
-Phase 2A completes local reporting against fixtures: one version-pinned query
-contract now drives overview, job, tool, workflow, daily, user, infrastructure,
-detail, and CSV responses. The Vue application restores filters and pagination
-from its URL and works at the root or behind a stripped proxy prefix.
+One version-pinned query contract drives overview, job, tool, workflow, daily,
+user, infrastructure, detail, status, and CSV responses. The Vue application
+restores filters and pagination from its URL and works at the root or behind a
+stripped proxy prefix.
 
-The bundled demonstration starts with sanitized 2026-09-19 Phase 0 observations.
-It includes the three recorded dedicated Batch calculations, a cross-runner
-retry, a mixed Kubernetes/Batch invocation, a nested collection invocation,
-known-zero existing capacity, unknown execution topology, two owners, and a
-separate baseline-VM interval. Clearly marked synthetic cases add a DST boundary,
-in-progress and awaiting-calculation work, and output reuse for reporting tests.
+Phase 2B adds unattended collection and the deployment contract: a read-only
+Galaxy database adapter, Kubernetes and GCP Batch/Compute/Logging observation,
+chargeable resource lifetimes shared by retry attempts, a versioned price
+catalog consumer, the fixed `anvil-workspace` identity mode, an independently
+versioned Helm chart, on-VM bootstrap, and read-only self-checks. See
+[`docs/collection.md`](docs/collection.md) and
+[`docs/deployment.md`](docs/deployment.md). The AnVIL dev pilot, live route
+validation, and the maintained catalog feed are not yet done; the status report
+names those gaps rather than implying coverage.
+
+The bundled demonstration starts with sanitized 2026-09-19 Phase 0
+observations. It includes the three recorded dedicated Batch calculations, a
+cross-runner retry, a mixed Kubernetes/Batch invocation, a nested collection
+invocation, known-zero existing capacity, unknown execution topology, two
+owners, and a separate baseline-VM interval. Clearly marked synthetic cases add
+a DST boundary, in-progress and awaiting-calculation work, output reuse, and a
+same-VM provider retry whose one lifetime is charged once across two attempts.
 No operational endpoint, credential, raw log, or user dataset is included.
 
 ## Run locally
@@ -36,13 +47,19 @@ make benchmark  # rolled-back 100,000-job reporting benchmark
 
 ## Commands
 
-The release image exposes one CLI and one server process:
+The release image exposes one CLI, a web process, and a collector process:
 
 ```console
 rainstone ingest-fixtures --path fixtures/phase1.json
-rainstone validate-catalog --path catalog/gcp-us-central1-2026-09-19.json
+rainstone collect [--cycles N]
+rainstone bootstrap --admin-database-url … --shared-account … --write-dsn …
+rainstone doctor
+rainstone catalog validate|import|refresh|coverage [--path …]
 uvicorn rainstone.main:app --host 0.0.0.0 --port 8000
 ```
+
+`make collect`, `make doctor`, `make catalog` and `make chart-lint` run these
+against the development environment and lint the packaged chart.
 
 The fixture command is replay-safe. It upserts source facts using stable source
 identities, records an ingestion cursor, and reuses a calculation revision when
@@ -50,13 +67,16 @@ its source-fact and price digest is unchanged.
 
 ## Identity contract
 
-Development mode provides explicit fixture identities through
-`X-Rainstone-Tenant`, `X-Rainstone-User`, and optional
-`X-Rainstone-Admin: true` headers. It is rejected unless demo mode is enabled.
-Trusted-proxy mode requires the same values from a proxy that strips client
-headers before forwarding; real AnVIL proxy validation remains Phase 2 work.
-Every detail, table, total, search, invocation, user, infrastructure, and export
-query applies the resolved tenant and owner scope on the backend.
+Three explicit modes, selected by configuration rather than inferred from a URL
+prefix. `development` provides fixture identities through `X-Rainstone-Tenant`,
+`X-Rainstone-User` and optional `X-Rainstone-Admin: true`, and is rejected
+unless demo mode is enabled. `trusted-proxy` requires those values from a proxy
+that strips client copies first. `anvil-workspace` reports one fixed tenant and
+shared Galaxy account and rejects any client identity header; the packaged
+browser application sends no identity headers outside development mode. Every
+detail, table, total, search, invocation, user, infrastructure, status and
+export query applies the resolved tenant and owner scope on the backend.
+[`docs/deployment.md`](docs/deployment.md) has the deployment contract.
 
 ## Cost semantics
 
@@ -74,14 +94,22 @@ query applies the resolved tenant and owner scope on the backend.
 - A separately labeled completed-job cohort supplies historical tool statistics;
   its percentiles are never added across workflow steps.
 
+- A resource lifetime is priced once per basis and component, with the provider
+  minimum applied once to that lifetime. Retries that reuse one VM share that
+  charge instead of repeating it; work shared by two Galaxy jobs becomes
+  unavailable pending an allocation policy.
+
 The bundled price snapshot was observed on 2026-09-19 from Google's official
-general-purpose VM pricing page. It has no Catalog API effective timestamps, so
-calculations are marked approximate. Disks, network, discounts, credits, and
-taxes are excluded.
+general-purpose VM pricing page, covering `us-central1` only. It has no Catalog
+API effective timestamps, so calculations are marked approximate. Shapes and
+regions outside the catalog, including the observed `us-east4` N2 shapes, stay
+visibly unpriced. Disks, network, discounts, credits, and taxes are excluded.
 
 The adopted design-system revisions are recorded in
 [`docs/design-reference.md`](docs/design-reference.md).
 The shared filter and accounting contract is documented in
-[`docs/reporting-contract.md`](docs/reporting-contract.md), and the measured
+[`docs/reporting-contract.md`](docs/reporting-contract.md), collection and
+resource accounting in [`docs/collection.md`](docs/collection.md), and the
+measured
 100,000-job results and query plan are in
 [`docs/benchmark-results.md`](docs/benchmark-results.md).

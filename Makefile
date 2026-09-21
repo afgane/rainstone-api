@@ -1,4 +1,5 @@
-.PHONY: dev dev-down dev-reset test test-unit test-integration e2e build migrate seed benchmark
+.PHONY: dev dev-down dev-reset test test-unit test-integration e2e build migrate seed benchmark \
+	collect doctor catalog chart-lint
 
 COMPOSE := docker compose
 
@@ -41,3 +42,18 @@ seed:
 
 benchmark:
 	$(COMPOSE) exec -T backend python scripts/benchmark_reporting.py --jobs 100000
+
+collect:
+	$(COMPOSE) run --rm backend rainstone collect --cycles 1
+
+doctor:
+	$(COMPOSE) run --rm backend rainstone doctor
+
+catalog:
+	$(COMPOSE) run --rm backend rainstone catalog coverage
+
+chart-lint:
+	helm lint chart --set instance.slug=local --set auth.workspaceOwner=local-account \
+		--set collector.gcpBatch.enabled=false
+	helm template rainstone chart --set instance.slug=local \
+		--set auth.workspaceOwner=local-account --set collector.gcpBatch.enabled=false >/dev/null

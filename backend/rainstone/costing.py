@@ -1,13 +1,10 @@
-import hashlib
-import json
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
-from enum import Enum
-from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, text
 from sqlalchemy.orm import Session
 
 from rainstone.models import (
@@ -16,18 +13,17 @@ from rainstone.models import (
     CostRevision,
     DeploymentPolicy,
     ExecutionAttempt,
-    InfrastructureInterval,
-    Invocation,
-    InvocationJob,
     Job,
-    Owner,
+    LifetimeAttempt,
     PriceVersion,
     Quality,
-    ResourceInterval,
-    Tenant,
+    ReportGeneration,
+    ResourceLifetime,
+    ResourceSegment,
 )
 
-CALCULATION_VERSION = "phase2a-v2"
+CALCULATION_VERSION = "phase2b-v1"
+MINIMUM_BILLED_SECONDS = Decimal("60")
 
 
 @dataclass(frozen=True)
@@ -40,10 +36,59 @@ class CalculatedLine:
     allocations: tuple[dict, ...] = ()
 
 
-def calculate_interval(
-    interval: ResourceInterval, price: PriceVersion | list[PriceVersion] | None
+def _unavailable(reason: str, quality: Quality = Quality.partial) -> list[CalculatedLine]:
+    return [
+        CalculatedLine("additional", None, quality, reason),
+        CalculatedLine("allocated", None, quality, reason),
+    ]
+
+
+def _windows(
+    lifetime: ResourceLifetime, segments: Sequence[ResourceSegment]
+) -> list[tuple[datetime, datetime]]:
+    """Positive-duration accounting windows for one lifetime."""
+    pairs: list[tuple[datetime, datetime]] = []
+    for segment in segments:
+        if segment.observed_start and segment.observed_end:
+            pairs.append((segment.observed_start, segment.observed_end))
+    if not pairs and lifetime.observed_start and lifetime.observed_end:
+        pairs.append((lifetime.observed_start, lifetime.observed_end))
+    merged: list[tuple[datetime, datetime]] = []
+    for start, end in sorted(pairs):
+        if end <= start:
+            continue
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def _active_price(prices: Sequence[PriceVersion], at: datetime) -> PriceVersion | None:
+    applicable = [
+        price for price in prices if price.effective_from is None or price.effective_from <= at
+    ]
+    if not applicable:
+        return None
+    return max(
+        applicable, key=lambda price: price.effective_from or datetime.min.replace(tzinfo=UTC)
+    )
+
+
+def calculate_lifetime(
+    lifetime: ResourceLifetime,
+    segments: Sequence[ResourceSegment],
+    price: PriceVersion | Sequence[PriceVersion] | None,
+    *,
+    shared_job_count: int = 1,
 ) -> list[CalculatedLine]:
-    relationship = interval.capacity_relationship
+    """Price one chargeable resource lifetime once per basis.
+
+    The provider minimum applies to the lifetime, not to each attempt or each
+    daily bucket, and its uplift is distributed proportionally across the
+    observed positive-duration windows.
+    """
+    relationship = lifetime.capacity_relationship
     if relationship == CapacityRelationship.existing:
         return [
             CalculatedLine(
@@ -66,61 +111,59 @@ def calculate_interval(
             ),
             CalculatedLine("allocated", None, Quality.partial, "Resource allocation evidence is incomplete."),
         ]
-    if interval.observed_start is None or interval.observed_end is None:
-        return [
-            CalculatedLine("additional", None, Quality.partial, "Resource lifetime is incomplete."),
-            CalculatedLine("allocated", None, Quality.partial, "Resource lifetime is incomplete."),
-        ]
-    prices = price if isinstance(price, list) else ([price] if price is not None else [])
+    if shared_job_count > 1:
+        return _unavailable(
+            "More than one Galaxy job used this resource; an explicit allocation policy and "
+            "occupancy coverage are required before charging it.",
+        )
+    windows = _windows(lifetime, segments)
+    if not windows:
+        return _unavailable("Resource lifetime is incomplete.")
+    prices = list(price) if isinstance(price, Sequence) else ([price] if price is not None else [])
     if not prices:
-        return [
-            CalculatedLine("additional", None, Quality.unpriced, "No applicable machine price was found."),
-            CalculatedLine("allocated", None, Quality.unpriced, "No applicable machine price was found."),
-        ]
-    seconds = Decimal(str((interval.observed_end - interval.observed_start).total_seconds()))
-    if seconds <= 0:
-        return [
-            CalculatedLine("additional", None, Quality.partial, "Resource lifetime is not positive."),
-            CalculatedLine("allocated", None, Quality.partial, "Resource lifetime is not positive."),
-        ]
-    billed_seconds = max(Decimal("60"), seconds)
-    boundaries = sorted({
-        value.effective_from for value in prices
-        if value.effective_from and interval.observed_start < value.effective_from < interval.observed_end
-    })
-    points = [interval.observed_start, *boundaries, interval.observed_end]
+        return _unavailable("No applicable machine price was found.", Quality.unpriced)
+    observed = sum(
+        (Decimal(str((end - start).total_seconds())) for start, end in windows), Decimal("0")
+    )
+    if observed <= 0:
+        return _unavailable("Resource lifetime is not positive.")
+    billed_seconds = max(MINIMUM_BILLED_SECONDS, observed)
     allocations: list[dict] = []
     amount = Decimal("0")
-    for start, end in zip(points, points[1:], strict=False):
-        applicable = [
-            value for value in prices
-            if value.effective_from is None or value.effective_from <= start
-        ]
-        active = max(
-            applicable,
-            key=lambda value: value.effective_from or datetime.min.replace(tzinfo=UTC),
-        ) if applicable else None
-        if active is None:
-            return [
-                CalculatedLine("additional", None, Quality.unpriced, "No applicable machine price was found."),
-                CalculatedLine("allocated", None, Quality.unpriced, "No applicable machine price was found."),
-            ]
-        segment_seconds = Decimal(str((end - start).total_seconds()))
-        # Distribute one lifetime-level billing minimum over observed duration, including price boundaries.
-        charged_seconds = segment_seconds * billed_seconds / seconds
-        segment_amount = charged_seconds / Decimal("3600") * active.hourly_rate
-        amount += segment_amount
-        allocations.append({
-            "start": start.isoformat(), "end": end.isoformat(),
-            "observed_seconds": str(segment_seconds), "charged_seconds": str(charged_seconds),
-            "hourly_rate": str(active.hourly_rate), "amount": str(segment_amount),
-            "price_version_id": str(active.id) if active.id else None,
-        })
-    quality = Quality.approximate if interval.timing_method != "provider_billable" else Quality.complete
+    for window_start, window_end in windows:
+        boundaries = sorted(
+            {
+                value.effective_from
+                for value in prices
+                if value.effective_from and window_start < value.effective_from < window_end
+            }
+        )
+        points = [window_start, *boundaries, window_end]
+        for start, end in zip(points, points[1:], strict=False):
+            active = _active_price(prices, start)
+            if active is None:
+                return _unavailable("No applicable machine price was found.", Quality.unpriced)
+            segment_seconds = Decimal(str((end - start).total_seconds()))
+            charged_seconds = segment_seconds * billed_seconds / observed
+            segment_amount = charged_seconds / Decimal("3600") * active.hourly_rate
+            amount += segment_amount
+            allocations.append(
+                {
+                    "start": start.isoformat(),
+                    "end": end.isoformat(),
+                    "observed_seconds": str(segment_seconds),
+                    "charged_seconds": str(charged_seconds),
+                    "hourly_rate": str(active.hourly_rate),
+                    "amount": str(segment_amount),
+                    "price_version_id": str(active.id) if active.id else None,
+                }
+            )
+    quality = Quality.complete if lifetime.timing_method == "provider_billable" else Quality.approximate
     reason = (
-        "Dedicated VM compute from observed lifecycle proxy; excludes disk, network, discounts, credits, and taxes."
-        if quality == Quality.approximate
-        else "Dedicated VM compute from provider billable lifetime."
+        "Dedicated VM compute from provider billable lifetime."
+        if quality == Quality.complete
+        else "Dedicated VM compute from observed lifecycle proxy; excludes disk, network, "
+        "discounts, credits, and taxes."
     )
     return [
         CalculatedLine("additional", amount, quality, reason, billed_seconds, tuple(allocations)),
@@ -128,73 +171,110 @@ def calculate_interval(
     ]
 
 
-def _digest_value(value: Any) -> Any:
-    if isinstance(value, datetime):
-        return value.isoformat()
-    if isinstance(value, Decimal):
-        return format(value.normalize(), "f")
-    if isinstance(value, uuid.UUID):
-        return str(value)
-    if isinstance(value, Enum):
-        return value.value
-    return value
-
-
-def _model_facts(rows: list[Any]) -> list[dict[str, Any]]:
-    facts = [
-        {column.name: _digest_value(getattr(row, column.name)) for column in row.__table__.columns}
-        for row in rows
-    ]
-    return sorted(facts, key=lambda value: json.dumps(value, sort_keys=True, default=_digest_value))
+# Change detection runs in the database: hashing every fact row in Python cost
+# a multiple of the job count on each request. These are change markers, not
+# security digests, so md5 of the row text is sufficient.
+FINGERPRINT = text("""
+    WITH parts AS (
+        SELECT md5(t::text) AS h FROM tenant t WHERE t.id = :tenant
+        UNION ALL SELECT md5(t::text) FROM owner t WHERE t.tenant_id = :tenant
+        UNION ALL SELECT md5(t::text) FROM job t WHERE t.tenant_id = :tenant
+        UNION ALL SELECT md5(t::text)
+                    FROM execution_attempt t
+                    JOIN job j ON j.id = t.job_id
+                   WHERE j.tenant_id = :tenant
+        UNION ALL SELECT md5(t::text) FROM resource_lifetime t WHERE t.tenant_id = :tenant
+        UNION ALL SELECT md5(t::text)
+                    FROM resource_segment t
+                    JOIN resource_lifetime l ON l.id = t.lifetime_id
+                   WHERE l.tenant_id = :tenant
+        UNION ALL SELECT md5(t::text)
+                    FROM lifetime_attempt t
+                    JOIN resource_lifetime l ON l.id = t.lifetime_id
+                   WHERE l.tenant_id = :tenant
+        UNION ALL SELECT md5(t::text) FROM deployment_policy t WHERE t.tenant_id = :tenant
+        UNION ALL SELECT md5(t::text) FROM price_version t
+        UNION ALL SELECT md5(t::text) FROM invocation t WHERE t.tenant_id = :tenant
+        UNION ALL SELECT md5(t::text)
+                    FROM invocation_job t
+                    JOIN invocation i ON i.id = t.invocation_id
+                   WHERE i.tenant_id = :tenant
+        UNION ALL SELECT md5(t::text)
+                    FROM infrastructure_interval t
+                   WHERE t.tenant_id = :tenant
+    )
+    SELECT coalesce(md5(string_agg(h, '' ORDER BY h)), 'empty') AS digest FROM parts
+""")
 
 
 def report_fingerprint(session: Session, tenant_id: uuid.UUID) -> str:
-    """Hash every mutable fact that can change a tenant report."""
-    tenant = session.get(Tenant, tenant_id)
-    owners = list(session.scalars(select(Owner).where(Owner.tenant_id == tenant_id)))
-    jobs = list(session.scalars(select(Job).where(Job.tenant_id == tenant_id)))
-    attempts = list(session.scalars(
-        select(ExecutionAttempt).join(Job).where(Job.tenant_id == tenant_id)
-    ))
-    intervals = list(session.scalars(
-        select(ResourceInterval).join(ExecutionAttempt).join(Job).where(Job.tenant_id == tenant_id)
-    ))
-    policies = list(session.scalars(select(DeploymentPolicy).where(DeploymentPolicy.tenant_id == tenant_id)))
-    prices = list(session.scalars(select(PriceVersion)))
-    invocations = list(session.scalars(select(Invocation).where(Invocation.tenant_id == tenant_id)))
-    memberships = list(session.scalars(
-        select(InvocationJob).join(Invocation).where(Invocation.tenant_id == tenant_id)
-    ))
-    infrastructure = list(session.scalars(
-        select(InfrastructureInterval).where(InfrastructureInterval.tenant_id == tenant_id)
-    ))
-    facts = {
-        "tenant": _model_facts([tenant] if tenant else []),
-        "owners": _model_facts(owners),
-        "jobs": _model_facts(jobs),
-        "attempts": _model_facts(attempts),
-        "resource_intervals": _model_facts(intervals),
-        "policies": _model_facts(policies),
-        "prices": _model_facts(prices),
-        "invocations": _model_facts(invocations),
-        "invocation_jobs": _model_facts(memberships),
-        "infrastructure": _model_facts(infrastructure),
-    }
-    payload = json.dumps(facts, sort_keys=True, separators=(",", ":"), default=_digest_value)
-    return hashlib.sha256(payload.encode()).hexdigest()
+    """Hash the mutable facts that can change a tenant report.
+
+    This identifies *identical* facts, so a replay that rewrites the same
+    values reuses its calculation revision. Request-time staleness uses the
+    cheaper generation marker below. Raw job metrics are deliberately absent:
+    they reach reports only through the attempts, lifetimes and job resource
+    hints hashed here.
+    """
+    session.flush()
+    return session.execute(FINGERPRINT, {"tenant": tenant_id}).scalar_one()
+
+
+def current_generation(session: Session, tenant_id: uuid.UUID) -> int:
+    """The tenant's report-generation marker, advanced by database triggers.
+
+    Reporting requests only read it; the marker row is created when the tenant
+    is, so a missing row means no facts have been recorded yet.
+    """
+    session.flush()
+    row = session.get(ReportGeneration, tenant_id)
+    if row is None:
+        return 0
+    session.refresh(row)
+    return row.generation
+
+
+def _ensure_generation(session: Session, tenant_id: uuid.UUID) -> int:
+    row = session.get(ReportGeneration, tenant_id)
+    if row is None:
+        row = ReportGeneration(tenant_id=tenant_id, generation=1, updated_at=datetime.now(UTC))
+        session.add(row)
+        session.flush()
+    return current_generation(session, tenant_id)
+
+
+def _applicable_prices(session: Session, lifetime: ResourceLifetime) -> list[PriceVersion]:
+    statement = select(PriceVersion).where(
+        PriceVersion.provider == lifetime.provider,
+        PriceVersion.region == lifetime.region,
+        PriceVersion.machine_type == lifetime.machine_type,
+        PriceVersion.purchase_model == lifetime.purchase_model,
+    )
+    if lifetime.observed_end is not None:
+        statement = statement.where(
+            or_(
+                PriceVersion.effective_from.is_(None),
+                PriceVersion.effective_from < lifetime.observed_end,
+            )
+        )
+    return list(session.scalars(statement.order_by(PriceVersion.effective_from.asc().nullsfirst())))
 
 
 def calculate_tenant(
-    session: Session, tenant_id: uuid.UUID, reason: str = "fixture ingestion"
+    session: Session, tenant_id: uuid.UUID, reason: str = "collection"
 ) -> CostRevision:
     session.flush()
-    rows = session.execute(
-        select(ResourceInterval, ExecutionAttempt, Job)
-        .join(ExecutionAttempt, ResourceInterval.attempt_id == ExecutionAttempt.id)
-        .join(Job, ExecutionAttempt.job_id == Job.id)
-        .where(Job.tenant_id == tenant_id)
-        .order_by(Job.source_id, ResourceInterval.source_interval_id)
-    ).all()
+    generation = _ensure_generation(session, tenant_id)
+    latest = session.scalar(
+        select(CostRevision)
+        .where(
+            CostRevision.tenant_id == tenant_id,
+            CostRevision.calculation_version == CALCULATION_VERSION,
+        )
+        .order_by(CostRevision.created_at.desc(), CostRevision.id.desc())
+    )
+    if latest is not None and latest.facts_generation == generation:
+        return latest
     digest = report_fingerprint(session, tenant_id)
     existing = session.scalar(
         select(CostRevision).where(
@@ -204,6 +284,10 @@ def calculate_tenant(
         )
     )
     if existing:
+        # Replaying identical facts keeps the same revision; only its marker
+        # moves forward, because the rewrite advanced the generation.
+        existing.facts_generation = generation
+        session.flush()
         return existing
 
     revision = CostRevision(
@@ -211,6 +295,7 @@ def calculate_tenant(
         tenant_id=tenant_id,
         calculation_version=CALCULATION_VERSION,
         input_digest=digest,
+        facts_generation=generation,
         reason=reason,
         created_at=datetime.now(UTC),
     )
@@ -221,52 +306,80 @@ def calculate_tenant(
         .where(DeploymentPolicy.tenant_id == tenant_id)
         .order_by(DeploymentPolicy.effective_from.desc())
     )
-    for interval, attempt, job in rows:
-        price_statement = select(PriceVersion).where(
-                PriceVersion.provider == interval.provider,
-                PriceVersion.region == interval.region,
-                PriceVersion.machine_type == interval.machine_type,
-                PriceVersion.purchase_model == interval.purchase_model,
+    lifetimes = list(
+        session.scalars(
+            select(ResourceLifetime)
+            .where(ResourceLifetime.tenant_id == tenant_id)
+            .order_by(ResourceLifetime.resource_key)
         )
-        if interval.observed_end is not None:
-            price_statement = price_statement.where(or_(
-                PriceVersion.effective_from.is_(None),
-                PriceVersion.effective_from < interval.observed_end,
-            ))
-        applicable_prices = list(session.scalars(
-            price_statement.order_by(PriceVersion.effective_from.asc().nullsfirst())
-        ))
-        for line in calculate_interval(interval, applicable_prices):
-            used_price_ids = {
-                allocation["price_version_id"] for allocation in line.allocations
-                if allocation["price_version_id"]
-            }
-            single_price = next(
-                (value for value in applicable_prices if str(value.id) in used_price_ids), None
-            ) if len(used_price_ids) == 1 else None
-            session.add(
-                CostLine(
-                    id=uuid.uuid4(),
-                    revision_id=revision.id,
-                    job_id=job.id,
-                    attempt_id=attempt.id,
-                    resource_interval_id=interval.id,
-                    basis=line.basis,
-                    component="compute",
-                    amount=line.amount,
-                    currency=applicable_prices[0].currency if applicable_prices else "USD",
-                    quality=line.quality,
-                    reason=line.reason,
-                    price_version_id=single_price.id if single_price and line.amount is not None else None,
-                    policy_id=policy.id if policy else None,
-                    details={
-                        "machine_type": interval.machine_type,
-                        "timing_method": interval.timing_method,
-                        "billed_seconds": str(line.billed_seconds) if line.billed_seconds else None,
-                        "hourly_rate": str(single_price.hourly_rate) if single_price else None,
-                        "allocations": list(line.allocations),
-                    },
-                )
+    )
+    for lifetime in lifetimes:
+        segments = list(
+            session.scalars(
+                select(ResourceSegment)
+                .where(ResourceSegment.lifetime_id == lifetime.id)
+                .order_by(ResourceSegment.source_segment_id)
             )
+        )
+        links = list(
+            session.execute(
+                select(LifetimeAttempt, ExecutionAttempt, Job)
+                .join(ExecutionAttempt, LifetimeAttempt.attempt_id == ExecutionAttempt.id)
+                .join(Job, ExecutionAttempt.job_id == Job.id)
+                .where(LifetimeAttempt.lifetime_id == lifetime.id)
+                .order_by(Job.source_id, ExecutionAttempt.source_attempt_id)
+            ).all()
+        )
+        if not links:
+            continue
+        jobs = {job.id: job for _, _, job in links}
+        prices = _applicable_prices(session, lifetime)
+        lines = calculate_lifetime(lifetime, segments, prices, shared_job_count=len(jobs))
+        for job_id, job in jobs.items():
+            attempts = [
+                attempt for _, attempt, attempt_job in links if attempt_job.id == job_id
+            ]
+            for line in lines:
+                used_price_ids = {
+                    allocation["price_version_id"]
+                    for allocation in line.allocations
+                    if allocation["price_version_id"]
+                }
+                single_price = (
+                    next((value for value in prices if str(value.id) in used_price_ids), None)
+                    if len(used_price_ids) == 1
+                    else None
+                )
+                session.add(
+                    CostLine(
+                        id=uuid.uuid4(),
+                        revision_id=revision.id,
+                        job_id=job.id,
+                        lifetime_id=lifetime.id,
+                        # A charge shared by retries belongs to the lifetime, not
+                        # to one attempt row.
+                        attempt_id=attempts[0].id if len(attempts) == 1 else None,
+                        basis=line.basis,
+                        component="compute",
+                        amount=line.amount,
+                        currency=prices[0].currency if prices else "USD",
+                        quality=line.quality,
+                        reason=line.reason,
+                        price_version_id=single_price.id if single_price and line.amount is not None else None,
+                        policy_id=policy.id if policy else None,
+                        details={
+                            "resource_key": lifetime.resource_key,
+                            "resource_uid": lifetime.resource_uid,
+                            "machine_type": lifetime.machine_type,
+                            "timing_method": lifetime.timing_method,
+                            "billed_seconds": str(line.billed_seconds) if line.billed_seconds else None,
+                            "hourly_rate": str(single_price.hourly_rate) if single_price else None,
+                            "shared_attempt_ids": [str(attempt.id) for attempt in attempts],
+                            "shared_attempt_count": len(attempts),
+                            "shared_job_count": len(jobs),
+                            "allocations": list(line.allocations),
+                        },
+                    )
+                )
     session.flush()
     return revision
