@@ -5,14 +5,22 @@ export interface ReportState {
   view: View;
   basis: Basis;
   mode: "accrued" | "completed";
-  fromDate: string;
-  toDate: string;
+  fromTime: string;
+  toTime: string;
   timezone: string;
   search: string;
   owner: string;
+  toolId: string;
+  toolVersion: string;
+  invocationId: string;
+  workflowId: string;
   state: string;
   runner: string;
+  destination: string;
+  capacity: string;
   quality: string;
+  minCost: string;
+  maxCost: string;
   sort: string;
   direction: "asc" | "desc";
   offset: number;
@@ -64,6 +72,7 @@ export interface GroupItem {
 
 export interface DailyItem {
   date: string; amount: string; currency: string; job_count: number; provisional: boolean;
+  incomplete_count: number;
   by_runner: Record<string, string>; by_owner: Record<string, string>; by_tool: Record<string, string>;
 }
 
@@ -88,16 +97,43 @@ function apiPath(path: string): string {
 
 export function queryString(state: ReportState): string {
   const query = new URLSearchParams({ basis: state.basis, mode: state.mode, timezone: state.timezone });
-  if (state.fromDate) query.set("from", `${state.fromDate}T00:00:00Z`);
-  if (state.toDate) query.set("to", `${state.toDate}T00:00:00Z`);
-  for (const key of ["search", "owner", "state", "runner", "quality"] as const) {
-    if (state[key]) query.set(key, state[key]);
+  if (state.fromTime) query.set("from", offsetBoundary(state.fromTime, state.timezone));
+  if (state.toTime) query.set("to", offsetBoundary(state.toTime, state.timezone));
+  const filters = {
+    search: state.search, owner: state.owner, tool_id: state.toolId,
+    tool_version: state.toolVersion, invocation_id: state.invocationId,
+    workflow_id: state.workflowId, state: state.state, runner: state.runner,
+    destination: state.destination, capacity: state.capacity, quality: state.quality,
+    min_cost: state.minCost, max_cost: state.maxCost,
+  };
+  for (const [key, value] of Object.entries(filters)) {
+    if (value) query.set(key, value);
   }
   query.set("sort", state.sort);
   query.set("direction", state.direction);
   query.set("offset", String(state.offset));
   if (state.revision) query.set("revision", state.revision);
   return query.toString();
+}
+
+function offsetBoundary(value: string, timezone: string): string {
+  if (/Z$|[+-]\d\d:\d\d$/.test(value)) return value;
+  const local = value.length === 10 ? `${value}T00:00:00` : value;
+  const [date, clock] = local.split("T");
+  const [year, month, day] = date.split("-").map(Number);
+  const [hour = 0, minute = 0, second = 0] = (clock || "").split(":").map(Number);
+  const desired = Date.UTC(year, month - 1, day, hour, minute, second);
+  let instant = desired;
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
+  });
+  for (let pass = 0; pass < 2; pass += 1) {
+    const parts = Object.fromEntries(formatter.formatToParts(new Date(instant)).map(part => [part.type, part.value]));
+    const rendered = Date.UTC(+parts.year, +parts.month - 1, +parts.day, +parts.hour, +parts.minute, +parts.second);
+    instant += desired - rendered;
+  }
+  return new Date(instant).toISOString();
 }
 
 export async function get<T>(path: string, signal?: AbortSignal): Promise<T> {

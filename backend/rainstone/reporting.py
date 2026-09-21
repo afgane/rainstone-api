@@ -1,6 +1,5 @@
 import csv
 import io
-import math
 import statistics
 import uuid
 from collections import defaultdict
@@ -44,7 +43,24 @@ def _revision(session: Session, identity: Identity, requested: str | None) -> Co
     revision = session.scalar(statement.order_by(CostRevision.created_at.desc(), CostRevision.id.desc()))
     if requested and revision is None:
         raise HTTPException(409, "Calculation revision is no longer available")
+    if requested and revision:
+        latest_id = session.scalar(
+            select(CostRevision.id)
+            .where(CostRevision.tenant_id == identity.tenant_id)
+            .order_by(CostRevision.created_at.desc(), CostRevision.id.desc())
+            .limit(1)
+        )
+        if latest_id != revision.id:
+            raise HTTPException(
+                409,
+                "This snapshot is stale because report facts changed; refresh to select the latest revision",
+            )
     return revision
+
+
+def validate_snapshot(session: Session, identity: Identity, query: ReportQuery) -> None:
+    """Fail before a streaming response starts if its requested snapshot is stale."""
+    _revision(session, identity, query.revision)
 
 
 def _quality(lines: list[CostLine]) -> str:
@@ -64,20 +80,84 @@ def _quality(lines: list[CostLine]) -> str:
     return Quality.complete.value
 
 
-def _fraction(interval: ResourceInterval, query: ReportQuery, as_of: datetime) -> Decimal | None:
-    start = interval.observed_start
-    end = interval.observed_end or (as_of if start else None)
-    if not start or not end or end <= start:
-        return None
-    if not query.from_time and not query.to_time:
-        return Decimal("1")
+def _line_slices(
+    line: CostLine, interval: ResourceInterval, as_of: datetime
+) -> list[tuple[datetime, datetime, Decimal | None]]:
+    allocations = (line.details or {}).get("allocations") or []
+    if allocations:
+        amounts = [Decimal(value["amount"]) for value in allocations]
+        if line.amount is not None:
+            rounded = [value.quantize(Decimal("0.000000000001")) for value in amounts[:-1]]
+            amounts = [*rounded, line.amount - sum(rounded, ZERO)]
+        return [
+            (datetime.fromisoformat(value["start"]), datetime.fromisoformat(value["end"]), amount)
+            for value, amount in zip(allocations, amounts, strict=True)
+        ]
+    if interval.observed_start:
+        end = interval.observed_end or as_of
+        if end > interval.observed_start:
+            return [(interval.observed_start, end, line.amount)]
+    return []
+
+
+def _slice_fraction(start: datetime, end: datetime, query: ReportQuery) -> Decimal:
     lower, upper = query.from_time or start, query.to_time or end
     overlap = max(0.0, (min(end, upper) - max(start, lower)).total_seconds())
     return Decimal(str(overlap)) / Decimal(str((end - start).total_seconds()))
 
 
-def _base_records(session: Session, identity: Identity, query: ReportQuery) -> tuple[list[dict], CostRevision | None]:
+def _authorized_invocations(session: Session, identity: Identity):
+    statement = select(Invocation).where(Invocation.tenant_id == identity.tenant_id)
+    if not identity.is_admin:
+        statement = statement.where(Invocation.owner_id == identity.owner_id)
+    return list(session.scalars(statement))
+
+
+def _workflow_job_ids(session: Session, identity: Identity, query: ReportQuery) -> tuple[set[uuid.UUID], set[uuid.UUID]]:
+    """Resolve workflow filters to authorized, ownership-consistent memberships."""
+    invocations = _authorized_invocations(session, identity)
+    selected = invocations
+    if query.invocation_id:
+        try:
+            requested = uuid.UUID(query.invocation_id)
+            selected = [inv for inv in selected if inv.id == requested]
+        except ValueError:
+            selected = [inv for inv in selected if inv.source_id == query.invocation_id]
+    if query.workflow_id:
+        selected = [inv for inv in selected if (inv.workflow_id or inv.source_id) == query.workflow_id]
+    if query.search:
+        term = query.search.casefold()
+        selected = [inv for inv in selected if term in (
+            f"{inv.source_id} {inv.workflow_id or ''} {inv.workflow_name} {inv.workflow_version or ''}".casefold()
+        )]
+    invocation_ids = {inv.id for inv in selected}
+    if not invocation_ids:
+        return set(), set()
+    # A malformed cross-owner membership cannot expand a viewer's authorized cohort.
+    rows = session.execute(
+        select(InvocationJob.job_id, InvocationJob.invocation_id)
+        .join(Invocation, InvocationJob.invocation_id == Invocation.id)
+        .join(Job, InvocationJob.job_id == Job.id)
+        .where(
+            InvocationJob.invocation_id.in_(invocation_ids),
+            Job.tenant_id == identity.tenant_id,
+            Job.owner_id == Invocation.owner_id,
+        )
+    )
+    return {row.job_id for row in rows}, invocation_ids
+
+
+def _base_records(
+    session: Session,
+    identity: Identity,
+    query: ReportQuery,
+    *,
+    candidate_offset: int | None = None,
+    candidate_limit: int | None = None,
+    candidate_count: list[int] | None = None,
+) -> tuple[list[dict], CostRevision | None]:
     revision = _revision(session, identity, query.revision)
+    workflow_jobs, _ = _workflow_job_ids(session, identity, query)
     statement = (
         select(Job, Owner).join(Owner, Job.owner_id == Owner.id)
         .where(Job.tenant_id == identity.tenant_id)
@@ -90,10 +170,13 @@ def _base_records(session: Session, identity: Identity, query: ReportQuery) -> t
         statement = statement.where(Owner.source_id == query.owner)
     if query.search:
         term = f"%{query.search}%"
-        statement = statement.where(
+        job_match = (
             Job.source_id.ilike(term) | Job.tool_id.ilike(term)
             | func.coalesce(Job.tool_version, "").ilike(term) | Owner.label.ilike(term)
         )
+        if workflow_jobs:
+            job_match = job_match | Job.id.in_(workflow_jobs)
+        statement = statement.where(job_match)
     if query.tool_id:
         statement = statement.where(Job.tool_id == query.tool_id)
     if query.tool_version:
@@ -104,7 +187,17 @@ def _base_records(session: Session, identity: Identity, query: ReportQuery) -> t
         statement = statement.where(Job.runner == query.runner)
     if query.destination:
         statement = statement.where(Job.destination == query.destination)
+    if candidate_offset is not None and candidate_limit is not None:
+        sort_columns = {
+            "created_at": Job.created_at, "source_id": Job.source_id, "tool_id": Job.tool_id,
+            "state": Job.state, "runner": Job.runner, "owner": Owner.label,
+        }
+        column = sort_columns.get(query.sort, Job.created_at)
+        order = column.asc().nullslast() if query.direction == "asc" else column.desc().nullslast()
+        statement = statement.order_by(order, Job.id).offset(candidate_offset).limit(candidate_limit)
     jobs = session.execute(statement).all()
+    if candidate_count is not None:
+        candidate_count.append(len(jobs))
     job_ids = [job.id for job, _ in jobs]
     line_map: dict[uuid.UUID, list[tuple[CostLine, ResourceInterval, ExecutionAttempt]]] = defaultdict(list)
     if revision and job_ids:
@@ -122,20 +215,8 @@ def _base_records(session: Session, identity: Identity, query: ReportQuery) -> t
             line_map[line.job_id].append((line, interval, attempt))
 
     invocation_jobs: set[uuid.UUID] | None = None
-    if query.invocation_id:
-        try:
-            inv_id = uuid.UUID(query.invocation_id)
-        except ValueError:
-            inv_id = session.scalar(
-                select(Invocation.id).where(
-                    Invocation.source_id == query.invocation_id,
-                    Invocation.tenant_id == identity.tenant_id,
-                )
-            )
-        invocation_jobs = (
-            set(session.scalars(select(InvocationJob.job_id).where(InvocationJob.invocation_id == inv_id)))
-            if inv_id else set()
-        )
+    if query.invocation_id or query.workflow_id:
+        invocation_jobs = workflow_jobs
 
     as_of = revision.created_at if revision else datetime.now(UTC)
     records: list[dict] = []
@@ -149,36 +230,34 @@ def _base_records(session: Session, identity: Identity, query: ReportQuery) -> t
         unattributed = ZERO
         capacities: set[str] = set()
         interval_hit = False
+        has_timing = False
         for line, interval, _ in pairs:
             capacities.add(interval.capacity_relationship.value)
-            if line.amount is None:
-                continue
-            fraction = _fraction(interval, query, as_of)
-            if fraction is None:
-                unattributed += line.amount
-            elif fraction > 0:
-                interval_hit = True
-                # This distributes any minimum-charge uplift once across the observed lifetime.
-                known_amounts.append(line.amount * min(fraction, Decimal("1")))
+            slices = _line_slices(line, interval, as_of)
+            has_timing = has_timing or bool(slices)
+            if not slices:
+                if line.amount is not None:
+                    unattributed += line.amount
+            for start, end, slice_amount in slices:
+                fraction = _slice_fraction(start, end, query)
+                if fraction > 0:
+                    interval_hit = True
+                    if slice_amount is not None:
+                        known_amounts.append(slice_amount * min(fraction, Decimal("1")))
+        completions = [
+            pair[2].tool_finished_at for pair in pairs
+            if pair[2].outcome == "ok" and pair[2].tool_finished_at
+        ]
+        completed_at = max(completions) if completions else None
         if query.mode == "completed":
-            completions = [pair[2].tool_finished_at for pair in pairs if pair[2].outcome == "ok" and pair[2].tool_finished_at]
-            completed_at = max(completions) if completions else None
             if not completed_at or (query.from_time and completed_at < query.from_time) or (query.to_time and completed_at >= query.to_time):
                 continue
             known_amounts = [line.amount for line, _, _ in pairs if line.amount is not None]
-            interval_hit = bool(known_amounts)
-        elif (query.from_time or query.to_time) and pairs and not interval_hit and unattributed == ZERO:
+        elif (query.from_time or query.to_time) and pairs and has_timing and not interval_hit:
             continue
-        elif (query.from_time or query.to_time) and not pairs:
-            if (query.from_time and job.created_at < query.from_time) or (query.to_time and job.created_at >= query.to_time):
-                continue
         amount = sum(known_amounts, ZERO) if known_amounts else None
         if any(line.amount is not None for line in lines) and amount is None and not (query.from_time or query.to_time):
             amount = ZERO
-        term = (query.search or "").casefold()
-        searchable = " ".join((job.source_id, job.tool_id, job.tool_version or "", owner.label)).casefold()
-        if term and term not in searchable:
-            continue
         if query.tool_id and job.tool_id != query.tool_id:
             continue
         if query.tool_version and job.tool_version != query.tool_version:
@@ -205,19 +284,21 @@ def _base_records(session: Session, identity: Identity, query: ReportQuery) -> t
             "currency": "USD", "quality": quality,
             "reason": " | ".join(sorted({line.reason for line in lines})) or "Awaiting cost calculation.",
             "attempt_cost_lines": len(lines), "capacities": sorted(capacities),
-            "unattributed_amount": unattributed, "job": job, "pairs": pairs,
+            "unattributed_amount": unattributed,
+            "temporally_unattributed": bool(pairs and not has_timing) or not pairs,
+            "completed_at": completed_at,
+            "full_amount": sum((line.amount for line in lines if line.amount is not None), ZERO)
+            if any(line.amount is not None for line in lines) else None,
+            "job": job, "pairs": pairs,
         })
     return records, revision
 
 
-def _window(session: Session, identity: Identity, query: ReportQuery) -> dict:
-    bounds = session.execute(
-        select(func.min(ResourceInterval.observed_start), func.max(ResourceInterval.observed_end))
-        .join(ExecutionAttempt, ResourceInterval.attempt_id == ExecutionAttempt.id)
-        .join(Job, ExecutionAttempt.job_id == Job.id)
-        .where(Job.tenant_id == identity.tenant_id)
-    ).one()
-    lower, upper = query.from_time or bounds[0], query.to_time or bounds[1]
+def _window(query: ReportQuery, records: list[dict]) -> dict:
+    starts = [pair[1].observed_start for record in records for pair in record["pairs"] if pair[1].observed_start]
+    ends = [pair[1].observed_end for record in records for pair in record["pairs"] if pair[1].observed_end]
+    lower = query.from_time or (min(starts) if starts else None)
+    upper = query.to_time or (max(ends) if ends else None)
     return {
         "from": lower.isoformat() if lower else None, "to": upper.isoformat() if upper else None,
         "timezone": query.timezone, "semantics": "[from, to)", "mode": query.mode,
@@ -229,7 +310,7 @@ def _meta(session: Session, identity: Identity, query: ReportQuery, revision, re
     return {
         "basis": query.basis, "currency": "USD",
         "applied_filters": query.model_dump(mode="json", exclude={"limit", "offset", "sort", "direction"}),
-        "observation_window": _window(session, identity, query),
+        "observation_window": _window(query, records),
         "revision_id": str(revision.id) if revision else None,
         "calculation_version": revision.calculation_version if revision else None,
         "as_of": revision.created_at.isoformat() if revision else None,
@@ -238,7 +319,7 @@ def _meta(session: Session, identity: Identity, query: ReportQuery, revision, re
             "jobs": len(records), "priced": len(priced),
             "incomplete": sum(r["quality"] in {"partial", "unpriced", "in_progress"} for r in records),
             "known_zero": sum(r["quality"] == "known_zero" for r in records),
-            "temporally_unattributed": sum(r["unattributed_amount"] != 0 for r in records),
+            "temporally_unattributed": sum(r["temporally_unattributed"] for r in records),
         },
     }
 
@@ -246,7 +327,7 @@ def _meta(session: Session, identity: Identity, query: ReportQuery, revision, re
 def _public(record: dict) -> dict:
     return {
         key: str(value) if isinstance(value, Decimal) else value
-        for key, value in record.items() if key not in {"job", "pairs"}
+        for key, value in record.items() if key not in {"job", "pairs", "full_amount"}
     }
 
 
@@ -319,7 +400,7 @@ def job_detail(session: Session, identity: Identity, job_id: uuid.UUID, query: R
         })
     result = _public(record)
     result.update({
-        "interval_amount": result.pop("amount"),
+        "interval_amount": result["amount"],
         "full_job_amount": str(full["amount"]) if full["amount"] is not None else None,
         "basis": query.basis, "attempts": attempts,
         "revision_id": str(revision.id) if revision else None,
@@ -339,8 +420,19 @@ def tools(session: Session, identity: Identity, query: ReportQuery) -> dict:
     items = []
     for (tool_id, version), rows in groups.items():
         known = [r["amount"] for r in rows if r["amount"] is not None]
-        values = sorted(r["amount"] for r in rows if r["state"] == "ok" and r["amount"] is not None)
-        p95 = values[math.ceil(.95 * len(values)) - 1] if values else None
+        complete_rows = [
+            r for r in rows
+            if r["state"] == "ok" and r["full_amount"] is not None
+            and r["quality"] not in {"partial", "unpriced", "in_progress"}
+        ]
+        values = sorted(r["full_amount"] for r in complete_rows)
+        if values:
+            position = Decimal("0.95") * Decimal(len(values) - 1)
+            lower = int(position)
+            fraction = position - lower
+            p95 = values[lower] + (values[min(lower + 1, len(values) - 1)] - values[lower]) * fraction
+        else:
+            p95 = None
         items.append({
             "tool_id": tool_id, "tool_version": version, "job_count": len(rows),
             "amount": str(sum(known, ZERO)) if known else None, "priced_count": len(known),
@@ -351,28 +443,37 @@ def tools(session: Session, identity: Identity, query: ReportQuery) -> dict:
                 "mean": str(statistics.mean(values)) if values else None,
                 "median": str(statistics.median(values)) if values else None,
                 "p95": str(p95) if p95 is not None else None,
-                "method": "nearest-rank exact", "approximate": False,
+                "method": "continuous linear interpolation (R-7)",
+                "approximate": any(r["quality"] == "approximate" for r in complete_rows),
             },
         })
     items.sort(key=lambda x: (
         x["amount"] is None, -(Decimal(x["amount"]) if x["amount"] else ZERO),
         x["tool_id"], x["tool_version"] or "",
     ))
-    return {"items": items, "total": len(items), "meta": _meta(session, identity, query, revision, records)}
+    return {
+        "items": items[query.offset:query.offset + query.limit], "total": len(items),
+        "limit": query.limit, "offset": query.offset,
+        "meta": _meta(session, identity, query, revision, records),
+    }
 
 
 def invocations(session: Session, identity: Identity, query: ReportQuery, roots_only: bool = True) -> dict:
-    records, revision = _base_records(session, identity, query.model_copy(update={"invocation_id": None}))
+    records, revision = _base_records(session, identity, query)
     by_id = {uuid.UUID(r["id"]): r for r in records}
-    statement = select(Invocation).where(Invocation.tenant_id == identity.tenant_id)
-    if not identity.is_admin:
-        statement = statement.where(Invocation.owner_id == identity.owner_id)
-    if roots_only:
-        statement = statement.where(Invocation.parent_id.is_(None))
+    permitted = _authorized_invocations(session, identity)
+    _, selected_ids = _workflow_job_ids(session, identity, query)
+    constrained = bool(query.invocation_id or query.workflow_id)
     items = []
-    for inv in session.scalars(statement.order_by(Invocation.created_at.desc())):
+    for inv in sorted(permitted, key=lambda value: value.created_at, reverse=True):
+        if roots_only and inv.parent_id is not None:
+            continue
+        if constrained and inv.id not in selected_ids:
+            continue
         job_ids = set(session.scalars(
-            select(InvocationJob.job_id).where(InvocationJob.invocation_id == inv.id)
+            select(InvocationJob.job_id)
+            .join(Job, InvocationJob.job_id == Job.id)
+            .where(InvocationJob.invocation_id == inv.id, Job.owner_id == inv.owner_id)
         ))
         rows = [by_id[job_id] for job_id in job_ids if job_id in by_id]
         search_hit = (query.search or "").casefold() in (
@@ -391,7 +492,11 @@ def invocations(session: Session, identity: Identity, query: ReportQuery, roots_
             "unpriced_job_count": sum(r["quality"] in {"partial", "unpriced", "in_progress"} for r in rows),
             "reused_job_count": sum(bool(r["job"].copied_from_source_id) for r in rows),
         })
-    return {"items": items, "total": len(items), "meta": _meta(session, identity, query, revision, records)}
+    return {
+        "items": items[query.offset:query.offset + query.limit], "total": len(items),
+        "limit": query.limit, "offset": query.offset,
+        "meta": _meta(session, identity, query, revision, records),
+    }
 
 
 def invocation_detail(
@@ -401,6 +506,11 @@ def invocation_detail(
     item = next((value for value in result["items"] if value["id"] == str(invocation_id)), None)
     if not item:
         return None
+    related = invocations(
+        session, identity,
+        query.model_copy(update={"invocation_id": None, "workflow_id": None, "search": None}),
+        roots_only=False,
+    )
     memberships = session.scalars(
         select(InvocationJob).where(InvocationJob.invocation_id == invocation_id)
         .order_by(InvocationJob.step_key)
@@ -415,7 +525,9 @@ def invocation_detail(
         "step_key": membership.step_key, "relationship": membership.relationship,
         "job": by_id.get(str(membership.job_id)),
     } for membership in memberships]
-    item["children"] = [value for value in result["items"] if value["parent_id"] == str(invocation_id)]
+    item["children"] = [
+        value for value in related["items"] if value["parent_id"] == str(invocation_id)
+    ]
     item["meta"] = result["meta"]
     return item
 
@@ -424,47 +536,65 @@ def daily(session: Session, identity: Identity, query: ReportQuery) -> dict:
     records, revision = _base_records(session, identity, query)
     timezone = ZoneInfo(query.timezone)
     buckets: dict[str, dict] = defaultdict(lambda: {
-        "amount": ZERO, "job_ids": set(), "provisional": False,
+        "amount": ZERO, "job_ids": set(), "incomplete_ids": set(), "provisional": False,
         "by_runner": defaultdict(Decimal), "by_owner": defaultdict(Decimal),
         "by_tool": defaultdict(Decimal),
     })
     as_of = revision.created_at if revision else datetime.now(UTC)
     for record in records:
+        if query.mode == "completed":
+            completed_at = record["completed_at"]
+            if not completed_at:
+                continue
+            key = completed_at.astimezone(timezone).date().isoformat()
+            bucket = buckets[key]
+            bucket["job_ids"].add(record["id"])
+            if record["amount"] is None:
+                bucket["incomplete_ids"].add(record["id"])
+                continue
+            amount = record["amount"]
+            bucket["amount"] += amount
+            bucket["by_runner"][record["runner"] or "unknown"] += amount
+            bucket["by_owner"][record["owner"]] += amount
+            bucket["by_tool"][f"{record['tool_id']}@{record['tool_version'] or ''}"] += amount
+            continue
         for line, interval, _ in record["pairs"]:
-            if line.amount is None or not interval.observed_start:
-                continue
-            end = interval.observed_end or as_of
-            total_seconds = Decimal(str((end - interval.observed_start).total_seconds()))
-            if total_seconds <= 0:
-                continue
-            cursor = max(interval.observed_start, query.from_time or interval.observed_start)
-            limit = min(end, query.to_time or end)
-            while cursor < limit:
-                local = cursor.astimezone(timezone)
-                next_day = datetime.combine(
-                    local.date() + timedelta(days=1), datetime.min.time(), tzinfo=timezone
-                ).astimezone(UTC)
-                chunk_end = min(limit, next_day)
-                amount = line.amount * Decimal(str((chunk_end - cursor).total_seconds())) / total_seconds
-                key = local.date().isoformat()
-                bucket = buckets[key]
-                bucket["amount"] += amount
-                bucket["job_ids"].add(record["id"])
-                bucket["provisional"] = bucket["provisional"] or interval.observed_end is None
-                bucket["by_runner"][record["runner"] or "unknown"] += amount
-                bucket["by_owner"][record["owner"]] += amount
-                bucket["by_tool"][f"{record['tool_id']}@{record['tool_version'] or ''}"] += amount
-                cursor = chunk_end
+            for start, end, slice_amount in _line_slices(line, interval, as_of):
+                total_seconds = Decimal(str((end - start).total_seconds()))
+                cursor = max(start, query.from_time or start)
+                limit = min(end, query.to_time or end)
+                while cursor < limit:
+                    local = cursor.astimezone(timezone)
+                    next_day = datetime.combine(
+                        local.date() + timedelta(days=1), datetime.min.time(), tzinfo=timezone
+                    ).astimezone(UTC)
+                    chunk_end = min(limit, next_day)
+                    key = local.date().isoformat()
+                    bucket = buckets[key]
+                    bucket["job_ids"].add(record["id"])
+                    bucket["provisional"] = bucket["provisional"] or interval.observed_end is None
+                    if slice_amount is None:
+                        bucket["incomplete_ids"].add(record["id"])
+                        cursor = chunk_end
+                        continue
+                    amount = slice_amount * Decimal(str((chunk_end - cursor).total_seconds())) / total_seconds
+                    bucket["amount"] += amount
+                    bucket["by_runner"][record["runner"] or "unknown"] += amount
+                    bucket["by_owner"][record["owner"]] += amount
+                    bucket["by_tool"][f"{record['tool_id']}@{record['tool_version'] or ''}"] += amount
+                    cursor = chunk_end
     items = [{
         "date": day, "amount": str(data["amount"]), "currency": "USD",
-        "job_count": len(data["job_ids"]), "provisional": data["provisional"],
+        "job_count": len(data["job_ids"]), "incomplete_count": len(data["incomplete_ids"]),
+        "provisional": data["provisional"],
         "by_runner": {key: str(value) for key, value in data["by_runner"].items()},
         "by_owner": {key: str(value) for key, value in data["by_owner"].items()},
         "by_tool": {key: str(value) for key, value in data["by_tool"].items()},
     } for day, data in sorted(buckets.items())]
     return {
         "items": items,
-        "temporally_unattributed_count": sum(r["unattributed_amount"] != 0 for r in records),
+        "label": "Cost of jobs completed per day" if query.mode == "completed" else "Cost accrued per day",
+        "temporally_unattributed_count": sum(r["temporally_unattributed"] for r in records),
         "temporally_unattributed_subtotal": str(sum((r["unattributed_amount"] for r in records), ZERO)),
         "meta": _meta(session, identity, query, revision, records),
     }
@@ -486,7 +616,8 @@ def users(session: Session, identity: Identity, query: ReportQuery) -> dict:
             "priced_count": len(known), "incomplete_count": len(rows) - len(known),
         })
     return {
-        "items": sorted(items, key=lambda item: item["label"]), "total": len(items),
+        "items": sorted(items, key=lambda item: item["label"])[query.offset:query.offset + query.limit],
+        "total": len(items), "limit": query.limit, "offset": query.offset,
         "meta": _meta(session, identity, query, revision, records),
     }
 
@@ -518,7 +649,13 @@ def infrastructure(session: Session, identity: Identity, query: ReportQuery) -> 
         "currency": "USD", "scope": "Whole baseline resources; job filters do not apportion this total.",
         "allocation_supported": False,
         "allocation_reason": "T2D allocation is unavailable without a valid component policy.",
-        "observation_window": _window(session, identity, query),
+        "observation_window": {
+            "from": (query.from_time or (min((row.observed_start for row in rows), default=None))).isoformat()
+            if (query.from_time or rows) else None,
+            "to": (query.to_time or (max((row.observed_end for row in rows), default=None))).isoformat()
+            if (query.to_time or rows) else None,
+            "timezone": query.timezone, "semantics": "[from, to)", "mode": query.mode,
+        },
     }
 
 
@@ -527,10 +664,16 @@ def freshness(session: Session, identity: Identity) -> dict:
         select(IngestionState).where(IngestionState.tenant_id == identity.tenant_id)
         .order_by(IngestionState.source)
     ).all()
-    sources = [{
-        "source": row.source, "status": row.status, "last_success_at": row.last_success_at,
-        "cursor": row.cursor, "error": row.error,
-    } for row in rows]
+    now = datetime.now(UTC)
+    sources = []
+    for row in rows:
+        status = row.status
+        if status == "healthy" and row.last_success_at and now - row.last_success_at > timedelta(hours=24):
+            status = "stale"
+        sources.append({
+            "source": row.source, "status": status, "last_success_at": row.last_success_at,
+            "cursor": row.cursor, "error": row.error,
+        })
     price = session.execute(
         select(PriceVersion.catalog_id, PriceVersion.observed_at)
         .order_by(PriceVersion.observed_at.desc()).limit(1)
@@ -541,12 +684,14 @@ def freshness(session: Session, identity: Identity) -> dict:
             "last_success_at": price.observed_at,
             "cursor": {"catalog_id": price.catalog_id}, "error": None,
         })
-    overall = "failed" if any(source["status"] == "failed" for source in sources) else "healthy"
+    statuses = {source["status"] for source in sources}
+    overall = "failed" if "failed" in statuses else (
+        "partial" if statuses - {"healthy", "historical_snapshot"} else "healthy"
+    )
     return {"sources": sources, "overall_status": overall}
 
 
 def export_csv(session: Session, identity: Identity, query: ReportQuery):
-    result = list_jobs(session, identity, query, paginate=False)
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow([
@@ -560,17 +705,39 @@ def export_csv(session: Session, identity: Identity, query: ReportQuery):
     def safe(value):
         text = "" if value is None else str(value)
         return "'" + text if text[:1] in {"=", "+", "-", "@"} else text
-    for row in result["items"]:
-        writer.writerow([
-            *[safe(row.get(key)) for key in (
-                "id", "source_id", "tool_id", "tool_version", "owner", "state",
-                "runner", "destination",
-            )],
-            query.basis, "USD",
-            "accrued [from,to)" if query.mode == "accrued" else "completed in range",
-            safe(row["amount"]), row["quality"], safe(row["reason"]),
-            result["meta"]["revision_id"],
-        ])
-        yield output.getvalue()
-        output.seek(0)
-        output.truncate(0)
+    batch_size = 500
+    candidate_offset = 0
+    export_query = query.model_copy(update={"offset": 0, "limit": 200})
+    while True:
+        # Cost sorting depends on calculated lines, so preserve its global order as a compatibility fallback.
+        if query.sort == "amount":
+            result = list_jobs(session, identity, export_query, paginate=False)
+            records = result["items"]
+            revision_id = result["meta"]["revision_id"]
+            exhausted = True
+        else:
+            raw_count: list[int] = []
+            batch, revision = _base_records(
+                session, identity, export_query,
+                candidate_offset=candidate_offset, candidate_limit=batch_size,
+                candidate_count=raw_count,
+            )
+            records = [_public(record) for record in batch]
+            revision_id = str(revision.id) if revision else None
+            exhausted = raw_count[0] < batch_size
+        for row in records:
+            writer.writerow([
+                *[safe(row.get(key)) for key in (
+                    "id", "source_id", "tool_id", "tool_version", "owner", "state",
+                    "runner", "destination",
+                )],
+                query.basis, "USD",
+                "accrued [from,to)" if query.mode == "accrued" else "completed in range",
+                safe(row["amount"]), row["quality"], safe(row["reason"]), revision_id,
+            ])
+            yield output.getvalue()
+            output.seek(0)
+            output.truncate(0)
+        if exhausted:
+            break
+        candidate_offset += batch_size

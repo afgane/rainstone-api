@@ -21,6 +21,7 @@ class ReportQuery(BaseModel):
     tool_id: str | None = None
     tool_version: str | None = None
     invocation_id: str | None = None
+    workflow_id: str | None = None
     owner: str | None = None
     state: str | None = None
     runner: str | None = None
@@ -56,6 +57,7 @@ def report_query(
     tool_id: str | None = Query(default=None, max_length=500),
     tool_version: str | None = Query(default=None, max_length=100),
     invocation_id: str | None = None,
+    workflow_id: str | None = Query(default=None, max_length=300),
     owner: str | None = Query(default=None, max_length=200),
     state: str | None = Query(default=None, max_length=40),
     runner: str | None = Query(default=None, max_length=100),
@@ -72,6 +74,9 @@ def report_query(
 ) -> ReportQuery:
     if currency != "USD":
         raise HTTPException(422, "Only USD reporting is currently supported")
+    for label, value in (("from", from_time), ("to", to_time)):
+        if value is not None and value.utcoffset() is None:
+            raise HTTPException(422, f"{label} must include an explicit UTC offset")
     if from_time and to_time and from_time >= to_time:
         raise HTTPException(422, "The report interval must satisfy from < to")
     try:

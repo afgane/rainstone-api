@@ -38,6 +38,19 @@ def test_minimum_billing_is_applied_once_to_vm_interval() -> None:
     assert line.amount == Decimal("0.002")
 
 
+def test_price_boundary_splits_one_lifetime_and_applies_minimum_once() -> None:
+    item = interval(CapacityRelationship.dedicated, "40")
+    first = price("0.12")
+    first.effective_from = None
+    second = price("0.24")
+    second.effective_from = item.observed_start + timedelta(seconds=20)
+    line = calculate_interval(item, [first, second])[0]
+    # 20 observed + 20 minimum-uplift seconds at the starting rate, then 20 at the new rate.
+    assert line.billed_seconds == Decimal("60")
+    assert line.amount == Decimal("0.002666666666666666666666666666")
+    assert [allocation["charged_seconds"] for allocation in line.allocations] == ["40.0", "20.0"]
+
+
 def test_existing_capacity_is_known_zero_but_allocation_is_unavailable() -> None:
     additional, allocated = calculate_interval(interval(CapacityRelationship.existing), price())
     assert additional.amount == 0

@@ -19,8 +19,17 @@ for (const target of [
     await page.reload();
     await expect(page.getByPlaceholder("Search job, tool, owner, or workflow")).toHaveValue("fastqc");
     await page.getByRole("button", { name: /#16/ }).click();
+    await expect(page).toHaveURL(/detail_kind=jobs/);
+    await expect(page.getByRole("dialog")).toContainText("Full job");
+    await expect(page.getByRole("button", { name: "Close details" })).toBeFocused();
+    await page.goBack();
+    await expect(page.getByRole("dialog")).toBeHidden();
+    await page.goForward();
     await expect(page.getByRole("dialog")).toContainText("Full job");
     await page.keyboard.press("Escape");
+    await page.getByLabel("Tool version").fill("0.74+galaxy1");
+    await page.getByLabel("Tool version").press("Tab");
+    await expect(page).toHaveURL(/tool_version=0.74%2Bgalaxy1/);
     await page.getByLabel("Cost basis").selectOption("allocated");
     await expect(page).toHaveURL(/basis=allocated/);
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);

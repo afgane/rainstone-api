@@ -3,7 +3,7 @@ import {
   BarChart3, BriefcaseBusiness, Building2, CircleDollarSign, Database,
   Download, RefreshCw, Search, Users, Wrench, Workflow, X,
 } from "@lucide/vue";
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import {
   downloadExport, get, loadReport, queryString, type DailyItem, type Freshness,
   type GroupItem, type Invocation, type Job, type Me, type ReportState, type Summary, type View,
@@ -19,15 +19,25 @@ function stateFromUrl(): ReportState {
     view: validViews.includes(view) ? view : "overview",
     basis: params.get("basis") === "allocated" ? "allocated" : "additional",
     mode: params.get("mode") === "completed" ? "completed" : "accrued",
-    fromDate: params.get("from")?.slice(0, 10) || "",
-    toDate: params.get("to")?.slice(0, 10) || "",
+    fromTime: params.get("from") || defaultBoundary(-30),
+    toTime: params.get("to") || defaultBoundary(1),
     timezone: params.get("timezone") || "UTC",
     search: params.get("search") || "", owner: params.get("owner") || "",
+    toolId: params.get("tool_id") || "", toolVersion: params.get("tool_version") || "",
+    invocationId: params.get("invocation_id") || "", workflowId: params.get("workflow_id") || "",
     state: params.get("state") || "", runner: params.get("runner") || "",
-    quality: params.get("quality") || "", sort: params.get("sort") || "created_at",
+    destination: params.get("destination") || "", capacity: params.get("capacity") || "",
+    quality: params.get("quality") || "", minCost: params.get("min_cost") || "",
+    maxCost: params.get("max_cost") || "", sort: params.get("sort") || "created_at",
     direction: params.get("direction") === "asc" ? "asc" : "desc",
     offset: Number(params.get("offset")) || 0, revision: params.get("revision") || undefined,
   };
+}
+
+function defaultBoundary(dayOffset: number): string {
+  const value = new Date();
+  value.setUTCDate(value.getUTCDate() + dayOffset);
+  return value.toISOString().slice(0, 10);
 }
 
 const state = reactive<ReportState>(stateFromUrl());
@@ -40,6 +50,8 @@ const loading = ref(true);
 const error = ref("");
 const detail = ref<Record<string, unknown> | null>(null);
 const detailLoading = ref(false);
+const closeButton = ref<HTMLButtonElement | null>(null);
+let detailOpener: HTMLElement | null = null;
 let controller: AbortController | null = null;
 let timer = 0;
 let firstLoad = true;
@@ -70,6 +82,11 @@ const page = computed(() => Math.floor(state.offset / 50) + 1);
 function updateUrl(push = false) {
   const query = new URLSearchParams(queryString(state));
   query.set("view", state.view);
+  const current = new URLSearchParams(location.search);
+  if (current.get("detail_kind") && current.get("detail_id")) {
+    query.set("detail_kind", current.get("detail_kind")!);
+    query.set("detail_id", current.get("detail_id")!);
+  }
   const url = `${location.pathname}?${query}`;
   history[push ? "pushState" : "replaceState"]({}, "", url);
 }
@@ -105,7 +122,11 @@ function changeFilters() {
   timer = window.setTimeout(() => void refresh(true), 300);
 }
 function resetFilters() {
-  Object.assign(state, { search: "", owner: "", state: "", runner: "", quality: "", fromDate: "", toDate: "", offset: 0 });
+  Object.assign(state, {
+    search: "", owner: "", toolId: "", toolVersion: "", invocationId: "", workflowId: "",
+    state: "", runner: "", destination: "", capacity: "", quality: "", minCost: "",
+    maxCost: "", fromTime: "", toTime: "", offset: 0,
+  });
   void refresh(true);
 }
 function sort(field: string) {
@@ -119,21 +140,62 @@ function sortLabel(field: string) {
 function detailAmount(value: unknown): string | null {
   return typeof value === "string" ? value : null;
 }
-async function showDetail(kind: "jobs" | "invocations", id: string) {
+function detailList(key: string): Array<Record<string, unknown>> {
+  const value = detail.value?.[key];
+  return Array.isArray(value) ? value as Array<Record<string, unknown>> : [];
+}
+async function showDetail(kind: "jobs" | "invocations", id: string, updateHistory = true) {
+  detailOpener = document.activeElement as HTMLElement | null;
+  if (updateHistory) {
+    const params = new URLSearchParams(location.search);
+    params.set("detail_kind", kind); params.set("detail_id", id);
+    history.pushState({}, "", `${location.pathname}?${params}`);
+  }
   detailLoading.value = true;
-  try { detail.value = await get<Record<string, unknown>>(`/${kind}/${id}?${queryString(state)}`); }
+  try {
+    detail.value = await get<Record<string, unknown>>(`/${kind}/${id}?${queryString(state)}`);
+    await nextTick(); closeButton.value?.focus();
+  }
   catch (reason) { error.value = reason instanceof Error ? reason.message : "Unable to load detail"; }
   finally { detailLoading.value = false; }
 }
+function closeDetail(updateHistory = true) {
+  detail.value = null;
+  if (updateHistory) {
+    const params = new URLSearchParams(location.search);
+    params.delete("detail_kind"); params.delete("detail_id");
+    history.pushState({}, "", `${location.pathname}?${params}`);
+  }
+  detailOpener?.focus();
+}
+function refreshLatest() { state.revision = undefined; void refresh(true); }
 async function download() {
   try { await downloadExport(state); }
   catch (reason) { error.value = reason instanceof Error ? reason.message : "Unable to export report"; }
 }
-function onPopState() { Object.assign(state, stateFromUrl()); void refresh(false); }
-function onKey(event: KeyboardEvent) { if (event.key === "Escape") detail.value = null; }
+function onPopState() {
+  const params = new URLSearchParams(location.search);
+  const kind = params.get("detail_kind"); const id = params.get("detail_id");
+  Object.assign(state, stateFromUrl()); void refresh(false);
+  if ((kind === "jobs" || kind === "invocations") && id) void showDetail(kind, id, false);
+  else closeDetail(false);
+}
+function onKey(event: KeyboardEvent) { if (event.key === "Escape") closeDetail(); }
+function selectDay(day: string) {
+  const next = new Date(`${day}T12:00:00Z`);
+  next.setUTCDate(next.getUTCDate() + 1);
+  state.fromTime = day;
+  state.toTime = next.toISOString().slice(0, 10);
+  changeView("daily");
+}
 
 watch(() => state.basis, () => { state.offset = 0; void refresh(true); });
-onMounted(() => { window.addEventListener("popstate", onPopState); window.addEventListener("keydown", onKey); void refresh(); });
+onMounted(() => {
+  window.addEventListener("popstate", onPopState); window.addEventListener("keydown", onKey); void refresh();
+  const params = new URLSearchParams(location.search);
+  const kind = params.get("detail_kind"); const id = params.get("detail_id");
+  if ((kind === "jobs" || kind === "invocations") && id) void showDetail(kind, id, false);
+});
 onBeforeUnmount(() => { controller?.abort(); window.removeEventListener("popstate", onPopState); window.removeEventListener("keydown", onKey); });
 </script>
 
@@ -163,10 +225,19 @@ onBeforeUnmount(() => { controller?.abort(); window.removeEventListener("popstat
         <label class="search"><Search :size="18" aria-hidden="true" /><span class="sr-only">Search report</span>
           <input v-model="state.search" placeholder="Search job, tool, owner, or workflow" @input="changeFilters"></label>
         <label><span>Accounting view</span><select v-model="state.mode" @change="changeFilters"><option value="accrued">Cost accrued in range</option><option value="completed">Jobs completed in range</option></select></label>
-        <label><span>From (UTC)</span><input v-model="state.fromDate" type="date" @change="changeFilters"></label>
-        <label><span>To, exclusive (UTC)</span><input v-model="state.toDate" type="date" @change="changeFilters"></label>
+        <label><span>From ({{ state.timezone }})</span><input v-model="state.fromTime" placeholder="YYYY-MM-DD or ISO timestamp" @change="changeFilters"></label>
+        <label><span>To, exclusive ({{ state.timezone }})</span><input v-model="state.toTime" placeholder="YYYY-MM-DD or ISO timestamp" @change="changeFilters"></label>
+        <label><span>Tool ID</span><input v-model="state.toolId" @change="changeFilters"></label>
+        <label><span>Tool version</span><input v-model="state.toolVersion" @change="changeFilters"></label>
+        <label><span>Workflow ID</span><input v-model="state.workflowId" @change="changeFilters"></label>
+        <label><span>Invocation ID</span><input v-model="state.invocationId" @change="changeFilters"></label>
         <label><span>State</span><select v-model="state.state" @change="changeFilters"><option value="">All states</option><option>ok</option><option>error</option><option>running</option></select></label>
         <label><span>Runner</span><select v-model="state.runner" @change="changeFilters"><option value="">All runners</option><option>kubernetes</option><option>gcp_batch</option><option>unknown</option></select></label>
+        <label><span>Destination</span><input v-model="state.destination" @change="changeFilters"></label>
+        <label><span>Capacity</span><select v-model="state.capacity" @change="changeFilters"><option value="">All capacity</option><option>existing</option><option>dedicated</option><option>elastic_shared</option><option>unknown</option></select></label>
+        <label v-if="me?.is_admin"><span>Owner ID</span><input v-model="state.owner" @change="changeFilters"></label>
+        <label><span>Minimum cost</span><input v-model="state.minCost" type="number" min="0" step="any" @change="changeFilters"></label>
+        <label><span>Maximum cost</span><input v-model="state.maxCost" type="number" min="0" step="any" @change="changeFilters"></label>
         <label><span>Quality</span><select v-model="state.quality" @change="changeFilters"><option value="">All quality</option><option value="known_zero">Known zero</option><option>approximate</option><option>partial</option><option>unpriced</option><option value="in_progress">In progress</option></select></label>
         <button class="secondary" @click="resetFilters">Reset</button>
         <button class="secondary" @click="download"><Download :size="16" aria-hidden="true" /> Export CSV</button>
@@ -183,11 +254,11 @@ onBeforeUnmount(() => { controller?.abort(); window.removeEventListener("popstat
           <article class="stat-card"><span>Failed / retried spend</span><strong><CostAmount :amount="summary.failed_spend" /> / <CostAmount :amount="summary.retried_spend" /></strong><small>Retries remain part of incurred spend</small></article>
           <article v-if="summary.can_view_infrastructure" class="stat-card"><span>Baseline infrastructure, separate scope</span><CostAmount :amount="summary.baseline_infrastructure_amount" /><small>Whole-VM observed window; never added to job allocations</small></article>
         </section>
-        <p class="snapshot">Snapshot {{ summary.revision_id?.slice(0, 8) }} · as of {{ summary.as_of ? new Date(summary.as_of).toLocaleString() : "unavailable" }} · {{ summary.observation_window.semantics }} · {{ summary.observation_window.timezone }}</p>
+        <p class="snapshot">Snapshot {{ summary.revision_id?.slice(0, 8) }} · as of {{ summary.as_of ? new Date(summary.as_of).toLocaleString() : "unavailable" }} · {{ summary.observation_window.semantics }} · {{ summary.observation_window.timezone }} <button class="secondary" @click="refreshLatest">Refresh snapshot</button></p>
 
         <template v-if="state.view === 'overview'">
-          <section class="panel"><div class="panel-heading"><div><h2>Daily accrued cost</h2><p>Each bar is also available in the table below.</p></div></div>
-            <div v-if="days.length" class="trend" aria-hidden="true"><button v-for="day in days" :key="day.date" :title="`${day.date}: $${day.amount}`" :style="{ height: `${Math.max(8, Number(day.amount) / maxDay * 120)}px` }" @click="changeView('daily')"></button></div>
+          <section class="panel"><div class="panel-heading"><div><h2>{{ state.mode === 'completed' ? 'Cost of jobs completed per day' : 'Daily accrued cost' }}</h2><p>Each bar selects that day in {{ state.timezone }}.</p></div></div>
+            <div v-if="days.length" class="trend"><button v-for="day in days" :key="day.date" :aria-label="`Select ${day.date}: $${day.amount}`" :title="`${day.date}: $${day.amount}`" :style="{ height: `${Math.max(8, Number(day.amount) / (maxDay || 1) * 120)}px` }" @click="selectDay(day.date)"></button></div>
             <div class="table-wrap"><table><caption class="sr-only">Daily cost chart data</caption><thead><tr><th>Date</th><th>Cost</th><th>Jobs</th><th>Status</th></tr></thead><tbody>
               <tr v-for="day in days" :key="day.date"><td>{{ day.date }}</td><td><CostAmount :amount="day.amount" /></td><td>{{ day.job_count }}</td><td>{{ day.provisional ? "Provisional" : "Observed" }}</td></tr>
             </tbody></table></div></section>
@@ -225,9 +296,9 @@ onBeforeUnmount(() => { controller?.abort(); window.removeEventListener("popstat
         </section>
 
         <section v-else-if="state.view === 'daily'" class="panel">
-          <div class="panel-heading"><div><h2>Daily accrued cost</h2><p>Day boundaries use {{ state.timezone }} and preserve the filtered subtotal.</p></div>
+          <div class="panel-heading"><div><h2>{{ state.mode === 'completed' ? 'Cost of jobs completed per day' : 'Cost accrued per day' }}</h2><p>Day boundaries use {{ state.timezone }} and preserve the filtered subtotal.</p></div>
             <label><span>Timezone</span><select v-model="state.timezone" @change="refresh(true)"><option>UTC</option><option>America/New_York</option><option>Europe/London</option></select></label></div>
-          <div class="table-wrap"><table><thead><tr><th>Date</th><th>Cost</th><th>Jobs</th><th>Runner breakdown</th><th>Coverage</th></tr></thead><tbody><tr v-for="day in days" :key="day.date"><td>{{ day.date }}</td><td><CostAmount :amount="day.amount" /></td><td>{{ day.job_count }}</td><td>{{ Object.entries(day.by_runner).map(([key, value]) => `${key}: $${value}`).join(" · ") }}</td><td>{{ day.provisional ? "Provisional" : "Observed" }}</td></tr></tbody></table></div>
+          <div class="table-wrap"><table><thead><tr><th>Date</th><th>Cost</th><th>Jobs</th><th>Runner breakdown</th><th>Coverage</th></tr></thead><tbody><tr v-for="day in days" :key="day.date"><td>{{ day.date }}</td><td><CostAmount :amount="day.amount" /></td><td>{{ day.job_count }}</td><td>{{ Object.entries(day.by_runner).map(([key, value]) => `${key}: $${value}`).join(" · ") }}</td><td>{{ day.incomplete_count }} incomplete · {{ day.provisional ? "Provisional" : "Observed" }}</td></tr></tbody></table></div>
         </section>
 
         <section v-else-if="state.view === 'infrastructure'" class="panel">
@@ -244,13 +315,17 @@ onBeforeUnmount(() => { controller?.abort(); window.removeEventListener("popstat
     </main>
   </div>
 
-  <div v-if="detail || detailLoading" class="dialog-backdrop" @click.self="detail = null">
+  <div v-if="detail || detailLoading" class="dialog-backdrop" @click.self="closeDetail()">
     <section class="dialog" role="dialog" aria-modal="true" aria-labelledby="detail-title">
-      <button class="icon-button" aria-label="Close details" @click="detail = null"><X /></button>
+      <button ref="closeButton" class="icon-button" aria-label="Close details" @click="closeDetail()"><X /></button>
       <div v-if="detailLoading" class="loading"><RefreshCw class="spin" /> Loading details…</div>
       <template v-else-if="detail"><p class="eyebrow">Traceable report detail</p><h2 id="detail-title">{{ detail.workflow_name || `Job #${detail.source_id}` }}</h2>
         <p v-if="detail.full_job_amount !== undefined"><strong>Selected interval:</strong> <CostAmount :amount="detailAmount(detail.interval_amount)" /> · <strong>Full job:</strong> <CostAmount :amount="detailAmount(detail.full_job_amount)" /></p>
-        <p>{{ detail.reason }}</p><pre>{{ JSON.stringify(detail.attempts || detail.steps || detail.children, null, 2) }}</pre></template>
+        <p>{{ detail.reason }}</p>
+        <div v-if="detailList('attempts').length" class="detail-list"><article v-for="attempt in detailList('attempts')" :key="String(attempt.id)"><strong>Attempt {{ attempt.source_attempt_id }}</strong><span>{{ attempt.runner }} · {{ attempt.outcome }} · {{ attempt.quality }}</span><span>{{ attempt.machine_type || 'Unknown machine' }} · {{ attempt.capacity_relationship }}</span><CostAmount :amount="detailAmount(attempt.amount)" /><small>{{ attempt.reason }}</small></article></div>
+        <div v-if="detailList('steps').length" class="detail-list"><article v-for="step in detailList('steps')" :key="String(step.step_key)"><strong>{{ step.step_key }}</strong><span>{{ step.relationship }}</span><button v-if="step.job" class="secondary" @click="showDetail('jobs', String((step.job as Record<string, unknown>).id))">Open job #{{ (step.job as Record<string, unknown>).source_id }}</button><small v-else>No authorized matching job</small></article></div>
+        <div v-if="detailList('children').length" class="detail-list"><article v-for="child in detailList('children')" :key="String(child.id)"><strong>{{ child.workflow_name }}</strong><span>{{ child.job_count }} jobs</span><button class="secondary" @click="showDetail('invocations', String(child.id))">Open child workflow</button></article></div>
+      </template>
     </section>
   </div>
 </template>

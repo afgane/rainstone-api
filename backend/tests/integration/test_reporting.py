@@ -1,3 +1,5 @@
+import uuid
+from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 
@@ -108,6 +110,63 @@ def test_daily_boundaries_price_change_and_completed_mode(client) -> None:
         headers=auth,
     ).json()
     assert completed["job_count"] == 1
+    completed_daily = client.get(
+        "/api/daily?mode=completed&search=midnight-price&from=2026-09-20T00:00:00Z"
+        "&to=2026-09-21T00:00:00Z&timezone=UTC",
+        headers=auth,
+    ).json()
+    assert completed_daily["label"] == "Cost of jobs completed per day"
+    assert completed_daily["items"][0]["date"] == "2026-09-20"
+    assert Decimal(completed_daily["items"][0]["amount"]) == Decimal(completed["amount"])
+
+
+def test_dated_reports_retain_unknown_work_and_daily_coverage(client) -> None:
+    auth = headers("bob")
+    query = "search=21&from=2026-09-19T00:00:00Z&to=2026-09-21T00:00:00Z"
+    jobs = client.get(f"/api/jobs?{query}", headers=auth).json()
+    daily = client.get(f"/api/daily?{query}", headers=auth).json()
+    assert [item["source_id"] for item in jobs["items"]] == ["21"]
+    assert jobs["items"][0]["temporally_unattributed"] is True
+    assert jobs["meta"]["coverage"]["temporally_unattributed"] == 1
+    assert daily["temporally_unattributed_count"] == 1
+
+
+def test_tool_statistics_use_complete_full_job_cohort(client) -> None:
+    auth = headers("alice")
+    clipped = client.get(
+        "/api/tools?search=midnight-price&from=2026-09-20T00:00:00Z"
+        "&to=2026-09-21T00:00:00Z",
+        headers=auth,
+    ).json()["items"][0]
+    assert Decimal(clipped["statistics"]["median"]) == Decimal("0.003285300000")
+    assert clipped["statistics"]["method"] == "continuous linear interpolation (R-7)"
+    assert clipped["statistics"]["approximate"] is True
+    retry = client.get("/api/tools?basis=allocated&search=retried", headers=auth).json()["items"][0]
+    assert retry["statistics"]["sample_count"] == 0
+    assert retry["statistics"]["excluded_count"] == 1
+
+
+def test_workflow_selection_is_shared_by_every_report(client) -> None:
+    auth = headers("alice")
+    invocations = client.get("/api/invocations", headers=auth).json()["items"]
+    mixed = next(item for item in invocations if item["source_id"] == "invocation-mixed")
+    query = f"invocation_id={mixed['id']}"
+    assert client.get(f"/api/summary?{query}", headers=auth).json()["job_count"] == 5
+    selected = client.get(f"/api/invocations?{query}", headers=auth).json()["items"]
+    assert [item["source_id"] for item in selected] == ["invocation-mixed"]
+    workflow_query = "workflow_id=workflow-rnaseq-mixed"
+    assert client.get(f"/api/jobs?{workflow_query}", headers=auth).json()["total"] == 5
+    assert client.get("/api/summary?search=RNA-seq%20mixed", headers=auth).json()["job_count"] == 5
+
+
+def test_datetime_validation_and_authorized_observation_window(client) -> None:
+    auth = headers("bob")
+    assert client.get("/api/summary?from=2026-09-19T00:00:00", headers=auth).status_code == 422
+    assert client.get(
+        "/api/summary?from=2026-09-19T00:00:00&to=2026-09-21T00:00:00Z", headers=auth
+    ).status_code == 422
+    window = client.get("/api/summary", headers=auth).json()["observation_window"]
+    assert window["from"].startswith("2026-09-19")
 
 
 def test_workflow_uses_stable_identity(client) -> None:
@@ -127,3 +186,27 @@ def test_replay_is_idempotent_and_preserves_totals(client) -> None:
         assert session.scalar(select(func.count()).select_from(CostRevision)) == revision_count
     after = client.get("/api/summary", headers=headers("admin", True)).json()
     assert after == before
+
+
+def test_stale_snapshot_is_rejected_consistently(client) -> None:
+    auth = headers("alice")
+    pinned = client.get("/api/summary", headers=auth).json()["revision_id"]
+    temporary_id = uuid.uuid4()
+    with Session(engine) as session:
+        current = session.get(CostRevision, uuid.UUID(pinned))
+        session.add(CostRevision(
+            id=temporary_id, tenant_id=current.tenant_id,
+            calculation_version=current.calculation_version,
+            input_digest=uuid.uuid4().hex, reason="snapshot rejection regression",
+            created_at=datetime.now(UTC),
+        ))
+        session.commit()
+    try:
+        for path in ("summary", "jobs", "daily", "export/jobs.csv"):
+            response = client.get(f"/api/{path}?revision={pinned}", headers=auth)
+            assert response.status_code == 409
+    finally:
+        with Session(engine) as session:
+            temporary = session.get(CostRevision, temporary_id)
+            session.delete(temporary)
+            session.commit()
