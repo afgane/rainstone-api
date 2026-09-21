@@ -5,7 +5,14 @@ from pathlib import Path
 
 from rainstone.db import engine
 from rainstone.ingestion import ingest_fixture
-from rainstone.models import CostRevision, IngestionEvent
+from rainstone.models import (
+    CostRevision,
+    InfrastructureInterval,
+    IngestionEvent,
+    Invocation,
+    InvocationJob,
+    Job,
+)
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -209,4 +216,65 @@ def test_stale_snapshot_is_rejected_consistently(client) -> None:
         with Session(engine) as session:
             temporary = session.get(CostRevision, temporary_id)
             session.delete(temporary)
+            session.commit()
+
+
+def test_current_snapshot_replays_all_report_scopes(client) -> None:
+    auth = headers("admin", True)
+    pinned = client.get("/api/summary", headers=auth).json()["revision_id"]
+    for path in ("summary", "jobs", "daily", "tools", "invocations", "users", "infrastructure"):
+        response = client.get(f"/api/{path}?revision={pinned}", headers=auth)
+        assert response.status_code == 200
+    infrastructure = client.get(f"/api/infrastructure?revision={pinned}", headers=auth).json()
+    assert infrastructure["revision_id"] == pinned
+
+
+def test_snapshot_detects_mutable_job_membership_and_infrastructure_facts(client) -> None:
+    auth = headers("admin", True)
+    pinned = client.get("/api/summary", headers=auth).json()["revision_id"]
+
+    with Session(engine) as session:
+        job = session.scalar(select(Job).where(Job.source_id == "13"))
+        original_tool = job.tool_id
+        job.tool_id = f"{original_tool}-changed"
+        session.commit()
+    try:
+        assert client.get(f"/api/jobs?revision={pinned}", headers=auth).status_code == 409
+        assert client.get("/api/jobs", headers=auth).status_code == 409
+    finally:
+        with Session(engine) as session:
+            job = session.scalar(select(Job).where(Job.source_id == "13"))
+            job.tool_id = original_tool
+            session.commit()
+
+    with Session(engine) as session:
+        invocation = session.scalar(select(Invocation).where(Invocation.source_id == "invocation-mixed"))
+        membership = session.scalar(
+            select(InvocationJob).where(InvocationJob.invocation_id == invocation.id)
+        )
+        membership_values = {
+            "invocation_id": membership.invocation_id, "job_id": membership.job_id,
+            "step_key": membership.step_key, "relationship": membership.relationship,
+        }
+        session.delete(membership)
+        session.commit()
+    try:
+        assert client.get(f"/api/invocations?revision={pinned}", headers=auth).status_code == 409
+    finally:
+        with Session(engine) as session:
+            session.add(InvocationJob(**membership_values))
+            session.commit()
+
+    with Session(engine) as session:
+        interval = session.scalar(select(InfrastructureInterval))
+        original_amount = interval.amount
+        interval.amount += Decimal("1")
+        session.commit()
+    try:
+        assert client.get(f"/api/infrastructure?revision={pinned}", headers=auth).status_code == 409
+        assert client.get(f"/api/summary?revision={pinned}", headers=auth).status_code == 409
+    finally:
+        with Session(engine) as session:
+            interval = session.scalar(select(InfrastructureInterval))
+            interval.amount = original_amount
             session.commit()

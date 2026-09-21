@@ -12,6 +12,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from rainstone.auth import Identity
+from rainstone.costing import report_fingerprint
 from rainstone.models import (
     CostLine,
     CostRevision,
@@ -55,6 +56,11 @@ def _revision(session: Session, identity: Identity, requested: str | None) -> Co
                 409,
                 "This snapshot is stale because report facts changed; refresh to select the latest revision",
             )
+    if revision and revision.input_digest != report_fingerprint(session, identity.tenant_id):
+        raise HTTPException(
+            409,
+            "This snapshot is stale because reporting facts changed; refresh to recalculate costs",
+        )
     return revision
 
 
@@ -337,7 +343,9 @@ def summary(session: Session, identity: Identity, query: ReportQuery) -> dict:
     failed = sum((r["amount"] or ZERO for r in records if r["state"] in {"error", "failed"}), ZERO)
     retried = sum((r["amount"] or ZERO for r in records if len({p[2].id for p in r["pairs"]}) > 1), ZERO)
     tenant = session.get(Tenant, identity.tenant_id)
-    infra = infrastructure(session, identity, query) if identity.is_admin else None
+    infra = infrastructure(
+        session, identity, query, revision=revision, snapshot_validated=True
+    ) if identity.is_admin else None
     return {
         **meta, "amount": meta["priced_subtotal"], "job_count": len(records),
         "priced_job_count": meta["coverage"]["priced"],
@@ -622,9 +630,17 @@ def users(session: Session, identity: Identity, query: ReportQuery) -> dict:
     }
 
 
-def infrastructure(session: Session, identity: Identity, query: ReportQuery) -> dict:
+def infrastructure(
+    session: Session,
+    identity: Identity,
+    query: ReportQuery,
+    revision: CostRevision | None = None,
+    snapshot_validated: bool = False,
+) -> dict:
     if not identity.is_admin:
         raise HTTPException(403, "Infrastructure reporting requires administrator scope")
+    if not snapshot_validated:
+        revision = _revision(session, identity, query.revision)
     rows = session.scalars(
         select(InfrastructureInterval)
         .where(InfrastructureInterval.tenant_id == identity.tenant_id)
@@ -649,6 +665,8 @@ def infrastructure(session: Session, identity: Identity, query: ReportQuery) -> 
         "currency": "USD", "scope": "Whole baseline resources; job filters do not apportion this total.",
         "allocation_supported": False,
         "allocation_reason": "T2D allocation is unavailable without a valid component policy.",
+        "revision_id": str(revision.id) if revision else None,
+        "as_of": revision.created_at.isoformat() if revision else None,
         "observation_window": {
             "from": (query.from_time or (min((row.observed_start for row in rows), default=None))).isoformat()
             if (query.from_time or rows) else None,

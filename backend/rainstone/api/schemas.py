@@ -188,6 +188,8 @@ class InfrastructureResponse(APIModel):
     allocation_supported: bool
     allocation_reason: str
     observation_window: dict[str, Any]
+    revision_id: str | None
+    as_of: datetime | None
 
 
 class FreshnessResponse(APIModel):

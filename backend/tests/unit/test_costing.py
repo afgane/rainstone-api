@@ -45,10 +45,10 @@ def test_price_boundary_splits_one_lifetime_and_applies_minimum_once() -> None:
     second = price("0.24")
     second.effective_from = item.observed_start + timedelta(seconds=20)
     line = calculate_interval(item, [first, second])[0]
-    # 20 observed + 20 minimum-uplift seconds at the starting rate, then 20 at the new rate.
+    # The 20-second minimum uplift is distributed over both equal observed segments.
     assert line.billed_seconds == Decimal("60")
-    assert line.amount == Decimal("0.002666666666666666666666666666")
-    assert [allocation["charged_seconds"] for allocation in line.allocations] == ["40.0", "20.0"]
+    assert line.amount == Decimal("0.0030")
+    assert [allocation["charged_seconds"] for allocation in line.allocations] == ["30", "30"]
 
 
 def test_existing_capacity_is_known_zero_but_allocation_is_unavailable() -> None:

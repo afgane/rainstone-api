@@ -10,7 +10,11 @@ class Base(DeclarativeBase):
     pass
 
 
-engine = create_engine(get_settings().database_url, pool_pre_ping=True)
+engine = create_engine(
+    get_settings().database_url,
+    pool_pre_ping=True,
+    isolation_level="REPEATABLE READ",
+)
 
 
 def get_session() -> Generator[Session, None, None]:

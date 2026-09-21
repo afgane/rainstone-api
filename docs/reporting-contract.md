@@ -9,13 +9,16 @@ breaks sort ties, and missing costs sort after known values in both directions.
 
 The summary request chooses a calculation revision. The browser pins that
 revision into every table, chart, detail, and export request and serializes it in
-the URL. A revision that is no longer current returns a conflict instead of
-joining its cost lines to newer mutable observations.
+the URL. Each revision fingerprints tenant, owner, job, attempt, resource,
+policy, price, workflow membership, and infrastructure facts. A revision that
+is no longer current or whose facts changed returns a conflict instead of
+joining its cost lines to newer mutable observations. Report requests use a
+repeatable-read database snapshot so validation and aggregation see one state.
 
 The default accrued mode clips each observed resource interval to the selected
 half-open range. A resource lifetime is split at catalog price boundaries. A
-billable minimum is applied once, with its uplift assigned to the lifetime's
-first price segment. Local calendar buckets
+billable minimum is applied once and its uplift is distributed proportionally
+over the observed positive-duration lifetime. Local calendar buckets
 use the selected timezone through zoneinfo, including daylight-saving
 transitions. Open intervals use the fixed revision timestamp and are
 provisional. Amounts without usable timing remain temporally unattributed.

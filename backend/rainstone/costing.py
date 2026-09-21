@@ -4,6 +4,8 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
+from enum import Enum
+from typing import Any
 
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
@@ -14,13 +16,18 @@ from rainstone.models import (
     CostRevision,
     DeploymentPolicy,
     ExecutionAttempt,
+    InfrastructureInterval,
+    Invocation,
+    InvocationJob,
     Job,
+    Owner,
     PriceVersion,
     Quality,
     ResourceInterval,
+    Tenant,
 )
 
-CALCULATION_VERSION = "phase1-v1"
+CALCULATION_VERSION = "phase2a-v2"
 
 
 @dataclass(frozen=True)
@@ -71,6 +78,11 @@ def calculate_interval(
             CalculatedLine("allocated", None, Quality.unpriced, "No applicable machine price was found."),
         ]
     seconds = Decimal(str((interval.observed_end - interval.observed_start).total_seconds()))
+    if seconds <= 0:
+        return [
+            CalculatedLine("additional", None, Quality.partial, "Resource lifetime is not positive."),
+            CalculatedLine("allocated", None, Quality.partial, "Resource lifetime is not positive."),
+        ]
     billed_seconds = max(Decimal("60"), seconds)
     boundaries = sorted({
         value.effective_from for value in prices
@@ -79,7 +91,7 @@ def calculate_interval(
     points = [interval.observed_start, *boundaries, interval.observed_end]
     allocations: list[dict] = []
     amount = Decimal("0")
-    for index, (start, end) in enumerate(zip(points, points[1:], strict=False)):
+    for start, end in zip(points, points[1:], strict=False):
         applicable = [
             value for value in prices
             if value.effective_from is None or value.effective_from <= start
@@ -94,8 +106,8 @@ def calculate_interval(
                 CalculatedLine("allocated", None, Quality.unpriced, "No applicable machine price was found."),
             ]
         segment_seconds = Decimal(str((end - start).total_seconds()))
-        # Provider minimum uplift is assigned to the first observed segment exactly once.
-        charged_seconds = segment_seconds + (billed_seconds - seconds if index == 0 else Decimal("0"))
+        # Distribute one lifetime-level billing minimum over observed duration, including price boundaries.
+        charged_seconds = segment_seconds * billed_seconds / seconds
         segment_amount = charged_seconds / Decimal("3600") * active.hourly_rate
         amount += segment_amount
         allocations.append({
@@ -116,9 +128,66 @@ def calculate_interval(
     ]
 
 
+def _digest_value(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        return format(value.normalize(), "f")
+    if isinstance(value, uuid.UUID):
+        return str(value)
+    if isinstance(value, Enum):
+        return value.value
+    return value
+
+
+def _model_facts(rows: list[Any]) -> list[dict[str, Any]]:
+    facts = [
+        {column.name: _digest_value(getattr(row, column.name)) for column in row.__table__.columns}
+        for row in rows
+    ]
+    return sorted(facts, key=lambda value: json.dumps(value, sort_keys=True, default=_digest_value))
+
+
+def report_fingerprint(session: Session, tenant_id: uuid.UUID) -> str:
+    """Hash every mutable fact that can change a tenant report."""
+    tenant = session.get(Tenant, tenant_id)
+    owners = list(session.scalars(select(Owner).where(Owner.tenant_id == tenant_id)))
+    jobs = list(session.scalars(select(Job).where(Job.tenant_id == tenant_id)))
+    attempts = list(session.scalars(
+        select(ExecutionAttempt).join(Job).where(Job.tenant_id == tenant_id)
+    ))
+    intervals = list(session.scalars(
+        select(ResourceInterval).join(ExecutionAttempt).join(Job).where(Job.tenant_id == tenant_id)
+    ))
+    policies = list(session.scalars(select(DeploymentPolicy).where(DeploymentPolicy.tenant_id == tenant_id)))
+    prices = list(session.scalars(select(PriceVersion)))
+    invocations = list(session.scalars(select(Invocation).where(Invocation.tenant_id == tenant_id)))
+    memberships = list(session.scalars(
+        select(InvocationJob).join(Invocation).where(Invocation.tenant_id == tenant_id)
+    ))
+    infrastructure = list(session.scalars(
+        select(InfrastructureInterval).where(InfrastructureInterval.tenant_id == tenant_id)
+    ))
+    facts = {
+        "tenant": _model_facts([tenant] if tenant else []),
+        "owners": _model_facts(owners),
+        "jobs": _model_facts(jobs),
+        "attempts": _model_facts(attempts),
+        "resource_intervals": _model_facts(intervals),
+        "policies": _model_facts(policies),
+        "prices": _model_facts(prices),
+        "invocations": _model_facts(invocations),
+        "invocation_jobs": _model_facts(memberships),
+        "infrastructure": _model_facts(infrastructure),
+    }
+    payload = json.dumps(facts, sort_keys=True, separators=(",", ":"), default=_digest_value)
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
 def calculate_tenant(
     session: Session, tenant_id: uuid.UUID, reason: str = "fixture ingestion"
 ) -> CostRevision:
+    session.flush()
     rows = session.execute(
         select(ResourceInterval, ExecutionAttempt, Job)
         .join(ExecutionAttempt, ResourceInterval.attempt_id == ExecutionAttempt.id)
@@ -126,29 +195,7 @@ def calculate_tenant(
         .where(Job.tenant_id == tenant_id)
         .order_by(Job.source_id, ResourceInterval.source_interval_id)
     ).all()
-    digest_input = [
-        {
-            "job": job.source_id,
-            "interval": interval.source_interval_id,
-            "relationship": interval.capacity_relationship.value,
-            "machine": interval.machine_type,
-            "region": interval.region,
-            "model": interval.purchase_model,
-            "start": interval.observed_start.isoformat() if interval.observed_start else None,
-            "end": interval.observed_end.isoformat() if interval.observed_end else None,
-        }
-        for interval, _, job in rows
-    ]
-    prices = session.scalars(
-        select(PriceVersion).order_by(PriceVersion.catalog_id, PriceVersion.machine_type)
-    ).all()
-    digest_input.extend(
-        {
-            "catalog": p.catalog_id, "machine": p.machine_type, "rate": str(p.hourly_rate),
-            "effective_from": p.effective_from.isoformat() if p.effective_from else None,
-        } for p in prices
-    )
-    digest = hashlib.sha256(json.dumps(digest_input, sort_keys=True).encode()).hexdigest()
+    digest = report_fingerprint(session, tenant_id)
     existing = session.scalar(
         select(CostRevision).where(
             CostRevision.tenant_id == tenant_id,
