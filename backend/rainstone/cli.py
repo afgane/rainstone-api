@@ -30,19 +30,48 @@ def main() -> None:
         help="Run this many cycles and exit; omit to run until stopped",
     )
 
+    discover = commands.add_parser(
+        "discover", help="Describe this deployment from what the cluster and host already record"
+    )
+    discover.add_argument("--namespace", default=None, help="Galaxy namespace, when several exist")
+    discover.add_argument("--release", default=None, help="Galaxy release name, when several exist")
+    discover.add_argument("--instance-slug", default=None)
+    discover.add_argument(
+        "--shared-account",
+        default=None,
+        help="Galaxy username, numeric ID or exact configured email to report on",
+    )
+    discover.add_argument("--base-path", default=None, help="Public path override")
+    discover.add_argument(
+        "--values",
+        type=Path,
+        default=None,
+        help="Write Helm values for the resolved fields to this file",
+    )
+
+    enroll = commands.add_parser(
+        "enroll", help="Record this instance's source enrollment and reporting scope"
+    )
+    enroll.add_argument("--shared-account", required=True, help="Galaxy account to report on")
+    enroll.add_argument("--descriptor", type=Path, default=None, help="JSON deployment descriptor")
+    enroll.add_argument(
+        "--replace-source",
+        action="store_true",
+        help="Retire the current fact namespace and enroll a replacement source database",
+    )
+
     boot = commands.add_parser(
-        "bootstrap", help="Provision the scoped Galaxy reader and seed instance identity"
+        "bootstrap",
+        help="Optional: provision a dedicated read-only Galaxy role and publish its credential",
     )
     boot.add_argument(
         "--admin-database-url",
         required=True,
         help="Installation-time Galaxy DSN; the application never receives it",
     )
-    boot.add_argument("--shared-account", required=True, help="Galaxy account to report on")
     boot.add_argument("--reader-role", default="rainstone_reader")
     boot.add_argument("--rotate", action="store_true", help="Rotate the reader credential")
     boot.add_argument("--write-dsn", type=Path, default=None, help="Write the scoped reader DSN here")
-    boot.add_argument("--descriptor", type=Path, default=None, help="JSON deployment descriptor")
     boot.add_argument(
         "--write-secret",
         default=None,
@@ -66,6 +95,11 @@ def main() -> None:
 
     doctor = commands.add_parser("doctor", help="Run read-only self-checks")
     doctor.add_argument("--json", action="store_true", help="Emit JSON (default)")
+    doctor.add_argument(
+        "--installation",
+        action="store_true",
+        help="Record the findings as installation history rather than a collector report",
+    )
 
     catalog = commands.add_parser("catalog", help="Manage the price catalog")
     catalog_commands = catalog.add_subparsers(dest="catalog_command", required=True)
@@ -99,18 +133,46 @@ def main() -> None:
             _print(results)
         return
 
-    if args.command == "bootstrap":
-        from rainstone.bootstrap import bootstrap
+    if args.command == "discover":
+        import yaml
+
+        from rainstone.discovery import discover as run_discovery
+
+        description = run_discovery(
+            namespace=args.namespace,
+            release=args.release,
+            instance_slug=args.instance_slug,
+            shared_account=args.shared_account,
+            base_path=args.base_path,
+        )
+        if args.values:
+            args.values.parent.mkdir(parents=True, exist_ok=True)
+            args.values.write_text(yaml.safe_dump(description.values(), sort_keys=True))
+        _print({**description.report(), "values_written": str(args.values) if args.values else None})
+        return
+
+    if args.command == "enroll":
+        from rainstone.enrollment import enroll as run_enrollment
 
         descriptor = json.loads(args.descriptor.read_text()) if args.descriptor else {}
         _print(
+            run_enrollment(
+                shared_account=args.shared_account,
+                descriptor=descriptor,
+                replace_source=args.replace_source,
+            )
+        )
+        return
+
+    if args.command == "bootstrap":
+        from rainstone.bootstrap import bootstrap
+
+        _print(
             bootstrap(
                 admin_database_url=args.admin_database_url,
-                shared_account=args.shared_account,
                 reader_role=args.reader_role,
                 rotate=args.rotate,
                 dsn_output=args.write_dsn,
-                descriptor=descriptor,
                 secret_target=args.write_secret,
             )
         )
@@ -169,7 +231,8 @@ def main() -> None:
 
         settings = _settings()
         with Session(engine) as session:
-            report = run_checks(session, settings, context="collector")
+            context = "installation" if args.installation else "collector"
+            report = run_checks(session, settings, context=context)
             try:
                 record_report(session, stable_id("tenant", settings.tenant_slug), report)
                 session.commit()

@@ -49,7 +49,7 @@ function stateFromUrl(): ReportState {
     quality: params.get("quality") || "", minCost: params.get("min_cost") || "",
     maxCost: params.get("max_cost") || "", sort: params.get("sort") || "created_at",
     direction: params.get("direction") === "asc" ? "asc" : "desc",
-    offset: Number(params.get("offset")) || 0, revision: params.get("revision") || undefined,
+    offset: Number(params.get("offset")) || 0,
   };
 }
 
@@ -128,10 +128,6 @@ async function refresh(push = false) {
     const result = await loadReport(state, controller.signal);
     summary.value = result.summary; jobs.value = result.jobs;
     freshness.value = result.freshness; me.value = result.me; viewData.value = result.view;
-    if (!state.revision && result.summary.revision_id) {
-      state.revision = result.summary.revision_id;
-      updateUrl(false);
-    }
     firstLoad = false;
   } catch (reason) {
     if ((reason as Error).name !== "AbortError") {
@@ -219,7 +215,7 @@ function closeDetail(updateHistory = true) {
   }
   detailOpener?.focus();
 }
-function refreshLatest() { state.revision = undefined; void refresh(true); }
+function refreshLatest() { void refresh(true); }
 async function download() {
   try { await downloadExport(state); }
   catch (reason) { error.value = reason instanceof Error ? reason.message : "Unable to export report"; }

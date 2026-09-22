@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "catalog_id": "gcp-official-page-2026-09-19",
+  "observed_at": "2026-09-19T13:32:03Z",
+  "effective_at": null,
+  "currency": "USD",
+  "source_kind": "official_pricing_page",
+  "coverage": {
+    "regions": [
+      "us-central1"
+    ],
+    "machine_families": [
+      "t2d",
+      "n2"
+    ],
+    "purchase_models": [
+      "on_demand"
+    ],
+    "complete": false,
+    "note": "Pilot coverage. A provider catalog is meant to carry every region for the families it supports, maintained by the publisher rather than by operators. This artifact was captured by hand from the official pricing page for one region, so shapes elsewhere stay visibly unpriced instead of borrowing another region's rate."
+  },
+  "source_urls": [
+    "https://cloud.google.com/products/compute/pricing/general-purpose",
+    "https://docs.cloud.google.com/compute/docs/general-purpose-machines"
+  ],
+  "rates": [
+    {
+      "provider": "gcp",
+      "region": "us-central1",
+      "purchase_model": "on_demand",
+      "machine_type": "t2d-standard-4",
+      "hourly_rate": "0.168984"
+    },
+    {
+      "provider": "gcp",
+      "region": "us-central1",
+      "purchase_model": "on_demand",
+      "machine_type": "n2-standard-2",
+      "hourly_rate": "0.097118"
+    },
+    {
+      "provider": "gcp",
+      "region": "us-central1",
+      "purchase_model": "on_demand",
+      "machine_type": "n2-highcpu-2",
+      "hourly_rate": "0.071696"
+    },
+    {
+      "provider": "gcp",
+      "region": "us-central1",
+      "purchase_model": "on_demand",
+      "machine_type": "n2-highmem-4",
+      "hourly_rate": "0.262028"
+    }
+  ],
+  "exclusions": [
+    "disks",
+    "network",
+    "discounts",
+    "credits",
+    "taxes"
+  ],
+  "provenance_note": "Sanitized Phase 0 snapshot. Official page values; Catalog API SKU IDs and effective timestamps were unavailable."
+}

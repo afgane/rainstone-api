@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 
 from rainstone.config import Settings, get_settings
 from rainstone.db import get_session
+from rainstone.enrollment import configured_owners
 from rainstone.models import Owner, Tenant
 
 TENANT_HEADER = "x-rainstone-tenant"
@@ -54,20 +55,19 @@ def _resolve(session: Session, tenant_slug: str, owner_source_id: str) -> tuple[
 
 
 def _resolve_configured_account(session: Session, tenant: Tenant, account: str) -> Owner:
-    """Accept either the Galaxy source owner ID or the account name boot resolved."""
-    matches = list(
-        session.scalars(
-            select(Owner).where(
-                Owner.tenant_id == tenant.id,
-                (Owner.source_id == account) | (Owner.label == account),
-            )
-        )
-    )
+    """Accept the source owner ID, the username, or the configured account string.
+
+    Discovery resolves the account Galaxy itself is configured with, which may
+    be an email address. Enrolment recorded that exact string against the one
+    owner it resolved to, so matching it here selects that owner rather than
+    searching for it again.
+    """
+    matches = configured_owners(session, tenant.id, account)
     if not matches:
         raise HTTPException(
             500,
             "The configured shared Galaxy account is not enrolled for this instance; "
-            "run bootstrap before serving reports",
+            "run `rainstone enroll` before serving reports",
         )
     if len(matches) > 1:
         raise HTTPException(500, "The configured shared Galaxy account is ambiguous")

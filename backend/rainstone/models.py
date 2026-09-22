@@ -48,16 +48,20 @@ class Tenant(Base):
     base_url: Mapped[str | None] = mapped_column(String(500))
     capabilities: Mapped[dict] = mapped_column(JSON, default=dict)
     synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Set when a source replacement retires this fact namespace. Its history
+    # stays readable; new observations go to the successor tenant.
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class SourceBinding(Base):
-    """Binds a tenant's seeded instance identity to one source database.
+    """Binds a tenant's fact namespace to one enrolled source lifetime.
 
-    Identity is the source-lifetime identifier enrolled in the source database
-    itself, not a schema hash or a release name: column-level grants change what
-    a reader can see, and two unrelated databases can share a schema. A replaced
-    Galaxy database is refused until it is explicitly enrolled, so it cannot
-    inherit an old instance identity and its job IDs.
+    The lifetime identifier is `enrollment_uuid`, generated here and kept in
+    Rainstone's own database: reading Galaxy never requires writing to it.
+    Endpoint, fingerprint and deployment evidence corroborate that the endpoint
+    still holds the enrolled database; none of them is identity. A VM restart,
+    resize or restore keeps the same enrollment, and replacing the source is an
+    explicit act that opens a new fact namespace.
     """
 
     __tablename__ = "source_binding"
@@ -66,8 +70,12 @@ class SourceBinding(Base):
         ForeignKey("tenant.id", ondelete="CASCADE"), unique=True
     )
     instance_uuid: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), unique=True)
+    enrollment_uuid: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), unique=True)
     source_kind: Mapped[str] = mapped_column(String(40))
-    source_identity: Mapped[str] = mapped_column(String(64))
+    # Corroborating evidence, recorded for diagnostics and replacement alarms.
+    source_endpoint: Mapped[str | None] = mapped_column(String(300))
+    source_fingerprint: Mapped[str | None] = mapped_column(String(64))
+    evidence: Mapped[dict] = mapped_column(JSON, default=dict)
     # Schema capability, recorded for diagnostics; never used as identity.
     schema_fingerprint: Mapped[str | None] = mapped_column(String(200))
     source_version: Mapped[str | None] = mapped_column(String(100))
@@ -99,6 +107,10 @@ class Owner(Base):
     tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenant.id", ondelete="CASCADE"))
     source_id: Mapped[str] = mapped_column(String(200))
     label: Mapped[str] = mapped_column(String(200))
+    # How the shared account was configured, when that is neither the source ID
+    # nor the username: an exact configured email resolves once at enrolment,
+    # and the same string must still select this owner afterwards.
+    configured_as: Mapped[str | None] = mapped_column(String(320))
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
     __table_args__ = (UniqueConstraint("tenant_id", "source_id"),)
 
@@ -226,6 +238,9 @@ class CatalogVersion(Base):
     active: Mapped[bool] = mapped_column(Boolean, default=False)
     rate_count: Mapped[int] = mapped_column(Integer, default=0)
     provenance: Mapped[dict] = mapped_column(JSON, default=dict)
+    # What the publisher declares this catalog covers, independent of which
+    # rows it managed to price.
+    coverage: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
 class ExecutionAttempt(Base):
@@ -398,7 +413,7 @@ class CapabilityReport(Base):
     """Self-check results recorded by the process that can actually run them.
 
     The web process holds no source or cloud credentials, so it reports the
-    collector's and bootstrap's findings with their own timestamps instead of
+    collector's and installation's findings with their own timestamps instead of
     re-running probes it would always skip.
     """
 

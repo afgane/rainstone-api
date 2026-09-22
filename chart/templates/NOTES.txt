@@ -6,21 +6,45 @@ release adds no separate public address.
 Identity mode: {{ .Values.auth.mode }}.
 {{- if eq .Values.auth.mode "anvil-workspace" }}
 Every request reports the fixed shared Galaxy account
-{{ .Values.auth.workspaceOwner | default "(unset - run rainstone bootstrap)" }}.
+{{ .Values.auth.workspaceOwner | default "(unset - run rainstone discover)" }}.
 Attribution is to that account, not to individual workspace members.
 {{- end }}
 
-{{- if .Values.source.adminSecret }}
-Initialization runs automatically on install and upgrade: it migrates the
-database, provisions the scoped Galaxy reader, enrolls this source's identity,
-writes the reader DSN into {{ include "rainstone.sourceSecret" . }}, imports the
+{{- if include "rainstone.sharedAccount" . }}
+Initialization runs automatically on install and upgrade: it migrates
+Rainstone's own database, {{ if .Values.source.provisionReader.enabled }}provisions the dedicated Galaxy reader role and
+publishes its credential, {{ end }}records this instance's source enrolment, imports the
 price catalog and records a self-check. Application pods wait for that sequence
 before they serve.
+
+Galaxy's database is only read.
+{{- if .Values.source.provisionReader.enabled }}
+Reads use the provisioned role, whose column-level grants the database
+enforces.
 {{- else }}
-No `source.adminSecret` is configured, so no Galaxy source is enrolled and
-nothing will be collected. Supply a Secret holding an installation-time DSN and
-set `source.sharedAccount`; the application itself never receives that
-credential.
+Reads use the existing credential in `{{ .Values.source.existingSecret }}`, which retains
+Galaxy's own privileges: the read-only behaviour around it is enforced by
+Rainstone, not by the database. The status report states this.
+{{- end }}
+{{- else }}
+No Galaxy account is configured, so no source is enrolled and nothing will be
+collected. Run `rainstone discover` on the Galaxy VM to produce the values for
+this deployment.
+{{- end }}
+
+{{- if eq (include "rainstone.batchEnabled" .) "false" }}
+
+GCP Batch observation is off because no project and location are configured.
+That is a configuration gap, not evidence that this Galaxy has no Batch jobs;
+`rainstone discover` reports what Galaxy's runner configuration says.
+{{- end }}
+
+{{- if .Values.galaxyWebhook.enabled }}
+
+To put Rainstone in Galaxy's masthead, mount {{ include "rainstone.fullname" . }}-webhook into
+Galaxy's own deployment at
+/galaxy/server/config/plugins/webhooks-custom/{{ .Values.galaxyWebhook.id }} — the chart cannot add a
+volume to Galaxy's pod. chart/templates/webhook.yaml carries the exact snippet.
 {{- end }}
 
 Check the deployment with `rainstone doctor` in the collector pod, or open

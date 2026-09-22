@@ -10,11 +10,14 @@ Phase 2B adds unattended collection and the deployment contract: a read-only
 Galaxy database adapter, Kubernetes and GCP Batch/Compute/Logging observation,
 chargeable resource lifetimes shared by retry attempts, a versioned price
 catalog consumer, the fixed `anvil-workspace` identity mode, an independently
-versioned Helm chart, on-VM bootstrap, and read-only self-checks. See
-[`docs/collection.md`](docs/collection.md) and
-[`docs/deployment.md`](docs/deployment.md). The AnVIL dev pilot, live route
-validation, and the maintained catalog feed are not yet done; the status report
-names those gaps rather than implying coverage.
+versioned Helm chart, on-VM discovery and enrolment, and read-only self-checks.
+
+Rainstone fits the Galaxy deployment it finds. It reads Galaxy with a credential
+that already exists, writes nothing to Galaxy's database, and keeps its own
+identity and state in its own. See [`docs/collection.md`](docs/collection.md)
+and [`docs/deployment.md`](docs/deployment.md). The AnVIL dev pilot, live route
+validation, and the maintained catalog publisher are not yet done; the status
+report names those gaps rather than implying coverage.
 
 The bundled demonstration starts with sanitized 2026-09-19 Phase 0
 observations. It includes the three recorded dedicated Batch calculations, a
@@ -52,7 +55,9 @@ The release image exposes one CLI, a web process, and a collector process:
 ```console
 rainstone ingest-fixtures --path fixtures/phase1.json
 rainstone collect [--cycles N]
-rainstone bootstrap --admin-database-url … --shared-account … --write-dsn …
+rainstone discover [--values values.yaml]
+rainstone enroll --shared-account … [--replace-source]
+rainstone bootstrap --admin-database-url … --write-dsn …   # optional reader
 rainstone wait-ready [--timeout 600]
 rainstone mark-installed
 rainstone heartbeat [--max-age 300]
@@ -105,11 +110,15 @@ export query applies the resolved tenant and owner scope on the backend.
 Catalog artifacts fetched from a feed are untrusted until an Ed25519 signature
 verifies against a release-pinned key; a feed cannot be configured without one.
 
-The bundled price snapshot was observed on 2026-09-19 from Google's official
-general-purpose VM pricing page, covering `us-central1` only. It has no Catalog
-API effective timestamps, so calculations are marked approximate. Shapes and
-regions outside the catalog, including the observed `us-east4` N2 shapes, stay
-visibly unpriced. Disks, network, discounts, credits, and taxes are excluded.
+The bundled price artifact declares the coverage it claims: `us-central1`, the
+`t2d` and `n2` families, on-demand only, observed on 2026-09-19 from Google's
+official general-purpose VM pricing page. It has no Catalog API effective
+timestamps, so calculations are marked approximate. A provider catalog is meant
+to carry every region for the families it supports, maintained by a publisher
+rather than by operators; until that publisher runs, shapes and regions outside
+the declared coverage — including the observed `us-east4` N2 shapes — stay
+visibly unpriced rather than borrowing another region's rate. Disks, network,
+discounts, credits, and taxes are excluded.
 
 The dashboard leads with the period, the amount and its coverage; periods are
 calendar periods, workflow runs report their whole cost beside the selected

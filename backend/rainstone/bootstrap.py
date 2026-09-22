@@ -1,13 +1,14 @@
-"""On-VM initialization.
+"""Optional provisioning of a dedicated Galaxy reader role.
 
-Bootstrap runs once per install or upgrade, with installation-time database
-privileges that the web and collector processes never receive. It provisions a
-dedicated read-only Galaxy role with column-level grants, seeds this instance's
-identity and binds it to the source database, records the baseline accounting
-policy, and resolves the shared Galaxy account this deployment reports on.
+This is a separate, explicit installation mode, not a startup step. The default
+deployment profile reads Galaxy with a credential that already exists and never
+changes the source database. Where an installer is permitted to run privileged
+DDL, this mode adds a database-enforced boundary instead of the
+application-enforced one: a login role with column-level SELECT grants, whose
+credential is published to the Secret the collector mounts.
 
-It never asks for an operator kubeconfig, cloud token or Galaxy superuser
-credential, and it never grants Rainstone's own database superuser rights.
+It creates no Rainstone tables in the source database. Enrollment identity lives
+in Rainstone's own database; see `rainstone.enrollment`.
 """
 
 import json
@@ -15,25 +16,14 @@ import secrets
 import ssl
 import urllib.error
 import urllib.request
-import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path
 
-from sqlalchemy import create_engine, select, text
+from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Connection
-from sqlalchemy.orm import Session
 
-from rainstone.adapters.galaxy_db import (
-    REQUIRED_TABLES,
-    SOURCE_IDENTITY_SCHEMA,
-    SOURCE_IDENTITY_TABLE,
-    GalaxyCapabilities,
-    discover_capabilities,
-)
+from rainstone.adapters.galaxy_db import REQUIRED_TABLES
 from rainstone.config import Settings, get_settings
-from rainstone.ingestion import stable_id
-from rainstone.models import DeploymentPolicy, Owner, SourceBinding, Tenant
 
 # Column-restricted grants for the tables the adapter reads. `job` is listed
 # column by column so the reader cannot read command lines or tool state.
@@ -41,7 +31,9 @@ READER_GRANTS: dict[str, tuple[str, ...] | None] = {
     "job": REQUIRED_TABLES["job"],
     "job_state_history": REQUIRED_TABLES["job_state_history"],
     "job_metric_numeric": REQUIRED_TABLES["job_metric_numeric"],
-    "galaxy_user": ("id", "username"),
+    # `email` is granted so the configured shared account can be matched by the
+    # exact address an operator already has. It is matched, never selected.
+    "galaxy_user": ("id", "username", "email"),
     "history": ("id", "user_id"),
     "workflow_invocation": ("id", "workflow_id", "history_id", "state", "create_time", "update_time"),
     "workflow_invocation_step": REQUIRED_TABLES["workflow_invocation_step"] + ("state",),
@@ -77,44 +69,6 @@ def _password_literal(password: str) -> str:
     if not password or not set(password) <= allowed:
         raise ValueError("reader password must be URL-safe base64 characters")
     return f"'{password}'"
-
-
-def enroll_source_identity(connection: Connection, *, role: str) -> tuple[str, bool]:
-    """Give this source database a durable identity the reader can read.
-
-    The identity lives in the source database, so it survives upgrades and
-    restores of that database and travels with a restored copy. A different
-    database, even with an identical schema, gets a different identity and is
-    therefore refused until an operator enrolls it deliberately.
-    """
-    quoted_role = _quote(role)
-    schema = _quote(SOURCE_IDENTITY_SCHEMA)
-    table = f"{schema}.{_quote(SOURCE_IDENTITY_TABLE)}"
-    connection.execute(text(f"CREATE SCHEMA IF NOT EXISTS {schema}"))
-    connection.execute(
-        text(
-            f"CREATE TABLE IF NOT EXISTS {table} ("
-            "identity uuid PRIMARY KEY, "
-            "enrolled_at timestamptz NOT NULL DEFAULT now(), "
-            "note text)"
-        )
-    )
-    existing = connection.execute(
-        text(f"SELECT identity::text AS identity FROM {table} ORDER BY enrolled_at LIMIT 1")
-    ).scalar()
-    created = existing is None
-    if created:
-        existing = str(uuid.uuid4())
-        connection.execute(
-            text(f"INSERT INTO {table} (identity, note) VALUES (:identity, :note)"),
-            {
-                "identity": existing,
-                "note": "Rainstone source-lifetime identity; do not copy between databases.",
-            },
-        )
-    connection.execute(text(f"GRANT USAGE ON SCHEMA {schema} TO {quoted_role}"))
-    connection.execute(text(f"GRANT SELECT ON {table} TO {quoted_role}"))
-    return existing, created
 
 
 def provision_reader(
@@ -288,165 +242,26 @@ def credential_works(dsn: str, *, statement_timeout: str = "10s") -> bool:
         return False
 
 
-def resolve_shared_account(admin_dsn: str, account: str) -> tuple[str, str]:
-    """Map the configured shared Galaxy account to its source owner ID."""
-    engine = create_engine(admin_dsn, pool_pre_ping=True)
-    with engine.connect() as connection:
-        connection.exec_driver_sql("SET TRANSACTION READ ONLY")
-        row = connection.execute(
-            text(
-                "SELECT id::text AS source_id, username FROM galaxy_user "
-                "WHERE username = :account OR id::text = :account"
-            ),
-            {"account": account},
-        ).mappings()
-        matches = list(row)
-    if not matches:
-        raise RuntimeError(f"the configured Galaxy account '{account}' does not exist")
-    if len(matches) > 1:
-        raise RuntimeError(f"the configured Galaxy account '{account}' is ambiguous")
-    return matches[0]["source_id"], matches[0]["username"] or account
-
-
-# Bindings created before source identity existed carry this marker and adopt
-# the identity they find; that is an upgrade, not a source replacement.
-LEGACY_IDENTITY = "pending-enrolment"
-
-
-def seed_instance(
-    session: Session,
-    settings: Settings,
-    capabilities: GalaxyCapabilities,
-    *,
-    owner_source_id: str,
-    owner_label: str,
-    descriptor: dict,
-    source_identity: str,
-) -> dict:
-    """Idempotently seed tenant identity, source binding, policy and owner."""
-    tenant_id = stable_id("tenant", settings.tenant_slug)
-    tenant = session.get(Tenant, tenant_id)
-    if tenant is None:
-        tenant = Tenant(
-            id=tenant_id,
-            slug=settings.tenant_slug,
-            display_name=settings.tenant_display_name,
-            capabilities={},
-        )
-        session.add(tenant)
-    tenant.display_name = settings.tenant_display_name
-    tenant.source_version = capabilities.source_version
-    tenant.capabilities = {
-        **(tenant.capabilities or {}),
-        "galaxy_db": True,
-        "kubernetes": settings.kubernetes_enabled,
-        "gcp_batch": settings.gcp_batch_enabled,
-        "demo": False,
-        "workspace_owner_source_id": owner_source_id,
-    }
-    tenant.synced_at = datetime.now(UTC)
-
-    now = datetime.now(UTC)
-    binding = session.scalar(select(SourceBinding).where(SourceBinding.tenant_id == tenant_id))
-    if binding is None:
-        binding = SourceBinding(
-            id=uuid.uuid4(),
-            tenant_id=tenant_id,
-            instance_uuid=uuid.uuid4(),
-            source_kind="galaxy_db",
-            source_identity=source_identity,
-            bound_at=now,
-            enrolled_at=now,
-        )
-        session.add(binding)
-    elif binding.source_identity == LEGACY_IDENTITY:
-        # Upgrade path: this binding predates source identity, so record what
-        # the configured source reports without treating it as a replacement.
-        binding.source_identity = source_identity
-        binding.enrolled_at = now
-    elif binding.source_identity != source_identity:
-        # Facts are keyed by tenant, so rebinding this instance would merge two
-        # databases' job IDs, attempts and cursors into one history. A different
-        # source therefore needs its own instance identity.
-        raise RuntimeError(
-            "this instance is enrolled with a different source database "
-            f"({binding.source_identity}, found {source_identity}). Rebinding would merge "
-            "two databases' job histories, so configure a new instance identity "
-            "(RAINSTONE_TENANT_SLUG) for the new source and bootstrap that instead"
-        )
-    binding.schema_fingerprint = capabilities.schema_fingerprint
-    binding.source_version = capabilities.source_version
-    binding.descriptor = descriptor
-
-    owner_id = stable_id(str(tenant_id), "owner", owner_source_id)
-    owner = session.get(Owner, owner_id)
-    if owner is None:
-        owner = Owner(id=owner_id, tenant_id=tenant_id, source_id=owner_source_id, label=owner_label)
-        session.add(owner)
-    owner.label = owner_label
-
-    policy_result = None
-    if settings.baseline_policy_version and settings.baseline_resource_uid:
-        policy_id = stable_id(str(tenant_id), "policy", settings.baseline_policy_version)
-        policy = session.get(DeploymentPolicy, policy_id)
-        if policy is None:
-            policy = DeploymentPolicy(
-                id=policy_id, tenant_id=tenant_id, version=settings.baseline_policy_version
-            )
-            session.add(policy)
-            policy.effective_from = datetime.now(UTC)
-        policy.baseline_resource_ids = [settings.baseline_resource_uid]
-        policy.assumptions = {
-            "unchanged_vm_size": True,
-            "unchanged_vm_uptime": True,
-            "machine_type": settings.baseline_machine_type,
-            "region": settings.baseline_region,
-            "zone": settings.baseline_zone,
-            "destinations": list(settings.baseline_destination_list),
-            "runners": list(settings.baseline_runner_list),
-            "default_basis": "additional",
-        }
-        policy.evidence = (
-            "Boot-supplied baseline descriptor; placement is verified per observation "
-            "before any zero additional-spend statement."
-        )
-        policy_result = settings.baseline_policy_version
-
-    session.commit()
-    return {
-        "tenant": settings.tenant_slug,
-        "instance_uuid": str(binding.instance_uuid),
-        "source_identity": binding.source_identity,
-        "owner_source_id": owner_source_id,
-        "owner_label": owner_label,
-        "baseline_policy": policy_result,
-        "source_version": capabilities.source_version,
-    }
-
-
 def bootstrap(
     settings: Settings | None = None,
     *,
     admin_database_url: str,
-    shared_account: str,
     reader_role: str = "rainstone_reader",
     rotate: bool = False,
     dsn_output: Path | None = None,
-    descriptor: dict | None = None,
     secret_target: str | None = None,
 ) -> dict:
-    """Provision and publish the reader credential, then seed instance identity.
+    """Provision and publish the scoped reader credential.
 
-    Every step is idempotent and recoverable: an interrupted run leaves either
-    a working published credential or a state the next run repairs.
+    Every step is idempotent and recoverable: an interrupted run leaves either a
+    working published credential or a state the next run repairs. Enrollment is
+    a separate step, so this mode can be skipped entirely.
     """
     settings = settings or get_settings()
-    from rainstone.db import engine as application_engine
-
     admin_engine = create_engine(admin_database_url, pool_pre_ping=True)
 
     # Publication is part of provisioning: a credential the collector cannot
-    # read is not a completed bootstrap. A retry therefore reconciles what was
+    # read is not a completed run. A retry therefore reconciles what was
     # published with what the database holds, rotating when it must, so an
     # interruption between the two writes recovers on the next run.
     published: str | None = None
@@ -476,7 +291,6 @@ def bootstrap(
             schema=schema,
             rotate=must_rotate,
         )
-        source_identity, identity_created = enroll_source_identity(connection, role=reader_role)
 
     dsn = reader_dsn(admin_database_url, reader_role, password) if must_rotate else published
     credential = ReaderCredential(
@@ -485,25 +299,8 @@ def bootstrap(
         dsn=dsn or "",
         rotated=bool(rotated),
     )
-    capabilities = discover_capabilities(
-        admin_engine, statement_timeout=settings.galaxy_statement_timeout
-    )
-    owner_source_id, owner_label = resolve_shared_account(admin_database_url, shared_account)
-    with Session(application_engine) as session:
-        seeded = seed_instance(
-            session,
-            settings,
-            capabilities,
-            owner_source_id=owner_source_id,
-            owner_label=owner_label,
-            descriptor=descriptor or {},
-            source_identity=source_identity,
-        )
-
     if not credential.dsn:
-        raise RuntimeError(
-            "no scoped reader credential is available to publish; re-run bootstrap"
-        )
+        raise RuntimeError("no scoped reader credential is available to publish; re-run bootstrap")
     republished = must_rotate or not usable
     if dsn_output and republished:
         dsn_output.parent.mkdir(parents=True, exist_ok=True)
@@ -524,22 +321,11 @@ def bootstrap(
             "the published scoped reader credential cannot open a session; "
             "re-run bootstrap to rotate and republish it"
         )
-    with Session(application_engine) as session:
-        # Record what initialization could verify, in its own credentials'
-        # context, so the web process can report it later.
-        from rainstone.doctor import record_report, run_checks
-
-        report = run_checks(session, settings, context="bootstrap")
-        record_report(session, stable_id("tenant", settings.tenant_slug), report)
-        session.commit()
     return {
-        **seeded,
-        "source_identity_created": identity_created,
         "reader_role": credential.role,
         "reader_credential_written": bool(dsn_output and republished),
         "reader_credential_secret": secret_result,
         "reader_credential_rotated": credential.rotated,
         "reader_credential_republished": republished,
-        "schema_compatible": capabilities.compatible,
-        "schema_missing": list(capabilities.missing),
+        "source_privilege": "provisioned-reader",
     }

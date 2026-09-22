@@ -29,7 +29,7 @@ automountServiceAccountToken: false
 ---
 {{- end }}
 {{- end }}
-{{- if .Values.source.adminSecret }}
+{{- if .Values.source.provisionReader.enabled }}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:

@@ -37,6 +37,11 @@ from rainstone.models import CatalogVersion, PriceVersion
 SCHEMA_VERSION = 2
 REQUIRED_FIELDS = {"schema_version", "catalog_id", "observed_at", "currency", "rates", "source_urls"}
 REQUIRED_RATE_FIELDS = {"provider", "region", "purchase_model", "machine_type", "hourly_rate"}
+# Coverage is declared by the publisher rather than inferred from the rows that
+# happen to be present: a region the catalog does not claim and a region it
+# claims but could not price are different facts, and only the first is a
+# complete answer.
+COVERAGE_FIELDS = {"regions", "machine_families", "purchase_models"}
 SUPPORTED_CURRENCIES = {"USD"}
 
 
@@ -101,6 +106,7 @@ class ValidatedCatalog:
     signature_key_id: str | None = None
     signature_verified: bool = False
     provenance: dict = field(default_factory=dict)
+    coverage: dict = field(default_factory=dict)
 
 
 def _digest(payload: bytes) -> str:
@@ -149,6 +155,21 @@ def validate(
         if key in keys:
             raise CatalogError(f"catalog contains duplicate resolver key: {key}")
         keys.add(key)
+    declared_coverage = data.get("coverage") or {}
+    if declared_coverage:
+        missing_coverage = COVERAGE_FIELDS - declared_coverage.keys()
+        if missing_coverage:
+            raise CatalogError(
+                f"catalog coverage is missing fields: {', '.join(sorted(missing_coverage))}"
+            )
+        uncovered = sorted(
+            {rate["region"] for rate in data["rates"]} - set(declared_coverage["regions"])
+        )
+        if uncovered:
+            raise CatalogError(
+                "catalog prices regions it does not declare coverage for: "
+                + ", ".join(uncovered)
+            )
     content = canonical_content(data)
     content_digest = _digest(content)
     if declared and declared != content_digest:
@@ -165,6 +186,7 @@ def validate(
         raise CatalogError("a verified catalog signature is required but absent")
     return ValidatedCatalog(
         catalog_id=data["catalog_id"],
+        coverage=declared_coverage,
         schema_version=int(data["schema_version"]),
         digest=content_digest,
         observed_at=datetime.fromisoformat(data["observed_at"].replace("Z", "+00:00")),
@@ -271,6 +293,7 @@ def import_catalog(session: Session, catalog: ValidatedCatalog) -> dict:
     version.imported_at = now
     version.rate_count = len(catalog.rates)
     version.provenance = catalog.provenance
+    version.coverage = catalog.coverage
     if existing is None:
         session.add(version)
     session.flush()
@@ -330,7 +353,12 @@ def refresh(
 
 
 def coverage(session: Session) -> dict:
-    """Which provider, region, model and shape combinations can be priced."""
+    """What the active catalog claims to cover, and what it can actually price.
+
+    A shape in a claimed region with no rate is a gap in maintained data; a
+    shape outside the claimed regions is simply not covered yet. Reporting them
+    as one number would hide which of the two an operator is looking at.
+    """
     rows = session.execute(
         select(
             PriceVersion.provider,
@@ -341,6 +369,8 @@ def coverage(session: Session) -> dict:
         ).order_by(PriceVersion.region, PriceVersion.machine_type)
     ).all()
     version = active_catalog(session)
+    claimed = (version.coverage if version else {}) or {}
+    priced_regions = sorted({row.region for row in rows})
     return {
         "active_catalog_id": version.catalog_id if version else None,
         "observed_at": version.observed_at.isoformat() if version else None,
@@ -348,6 +378,11 @@ def coverage(session: Session) -> dict:
         "signature_key_id": version.signature_key_id if version else None,
         "signature_verified": bool(version.signature_verified) if version else False,
         "provenance": version.provenance if version else {},
+        "claimed_coverage": claimed,
+        "priced_regions": priced_regions,
+        "claimed_regions_without_rates": sorted(
+            set(claimed.get("regions", [])) - set(priced_regions)
+        ),
         "supported": [
             {
                 "provider": row.provider,

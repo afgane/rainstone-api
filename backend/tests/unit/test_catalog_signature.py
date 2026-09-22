@@ -206,7 +206,7 @@ def test_a_feed_refresh_rejects_unsigned_content_by_default(monkeypatch) -> None
     result = catalog_module.refresh(
         session,
         url="https://feed.invalid/latest.json",
-        bundled_path=Path("catalog/gcp-us-central1-2026-09-19.json"),
+        bundled_path=Path("catalog/gcp-2026-09-19.json"),
         trusted_keys=trusted(key),
     )
     assert result["status"] == "last_known_good"

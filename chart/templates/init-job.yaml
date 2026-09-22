@@ -1,6 +1,6 @@
 {{/*
 On-VM initialization, run as one ordered sequence on install and upgrade:
-database availability, migration, scoped reader provisioning and source/account
+database availability, migration, the optional reader provisioning, source
 enrolment, catalog import, a recorded self-check, and finally this release's
 completion marker. Every step is idempotent, so an interrupted run is re-run by
 the Job's own retries or by the next release.
@@ -50,26 +50,37 @@ spec:
                   sys.exit(1)
               "; do sleep 3; done
               alembic upgrade head
-              {{- if .Values.source.adminSecret }}
+              {{- if .Values.source.provisionReader.enabled }}
               rainstone bootstrap \
                 --admin-database-url "$RAINSTONE_BOOTSTRAP_DATABASE_URL" \
-                --shared-account "{{ required "source.sharedAccount is required with source.adminSecret" .Values.source.sharedAccount }}" \
+                --reader-role "{{ .Values.source.provisionReader.role }}" \
                 --write-secret "{{ include "rainstone.sourceSecret" . }}/{{ .Values.source.dsnSecretKey }}" \
+                --write-dsn /tmp/source-dsn
+              # The mounted Secret value is fixed at pod start, so enrolment
+              # uses the credential this run just published rather than the
+              # empty one the chart pre-created.
+              RAINSTONE_GALAXY_DATABASE_URL="$(cat /tmp/source-dsn)"
+              export RAINSTONE_GALAXY_DATABASE_URL
+              {{- end }}
+              {{- if include "rainstone.sharedAccount" . }}
+              rainstone enroll \
+                --shared-account "{{ include "rainstone.sharedAccount" . }}" \
                 --descriptor /descriptor/descriptor.json
               {{- else }}
-              echo "no source.adminSecret configured; skipping source enrolment"
+              echo "no Galaxy account is configured; skipping source enrolment"
               {{- end }}
               rainstone catalog refresh
-              rainstone doctor || echo "self-check reported findings; see the status page"
+              rainstone doctor --installation || echo "self-check reported findings; see the status page"
               rainstone mark-installed
           env:
             {{- include "rainstone.env" . | nindent 12 }}
-            {{- if .Values.source.adminSecret }}
+            {{- include "rainstone.sourceEnv" . | nindent 12 }}
+            {{- if .Values.source.provisionReader.enabled }}
             - name: RAINSTONE_BOOTSTRAP_DATABASE_URL
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.source.adminSecret }}
-                  key: {{ .Values.source.adminSecretKey }}
+                  name: {{ required "source.provisionReader.adminSecret is required when provisioning a reader" .Values.source.provisionReader.adminSecret }}
+                  key: {{ .Values.source.provisionReader.adminSecretKey }}
             {{- end }}
           volumeMounts:
             - name: descriptor
@@ -93,5 +104,6 @@ data:
       "zone": {{ .Values.baseline.zone | default "" | quote }},
       "resource_uid": {{ .Values.baseline.resourceUid | default "" | quote }},
       "base_path": {{ .Values.basePath | quote }},
-      "release": {{ .Release.Name | quote }}
+      "release": {{ .Release.Name | quote }},
+      "resolved_by": "chart values"
     }

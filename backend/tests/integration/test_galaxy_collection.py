@@ -483,15 +483,37 @@ def test_provider_retry_charges_one_shared_vm_lifetime(source_engine) -> None:
         assert job.state == "error"
 
 
-def test_identity_follows_the_source_database_not_its_schema(source_engine) -> None:
-    """Bootstrap and collection must agree about the same database.
+def _settings(prefix: str, **overrides) -> Settings:
+    return Settings(
+        auth_mode="development",
+        demo_data=True,
+        tenant_slug=f"{prefix}-{uuid.uuid4().hex[:8]}",
+        **overrides,
+    )
 
-    The administrator and the column-restricted reader see different columns,
-    so a schema hash cannot decide identity; the enrolled identifier can.
+
+def _drop_tenants(slug_prefix: str) -> None:
+    with Session(engine) as session:
+        for tenant in session.scalars(select(Tenant).where(Tenant.slug.like(f"{slug_prefix}%"))):
+            session.delete(tenant)
+        session.commit()
+
+
+def test_enrollment_identity_survives_a_restricted_reader_and_a_moved_endpoint(
+    source_engine,
+) -> None:
+    """Identity is Rainstone's own, so neither grants nor a host decide it.
+
+    An administrator and a column-restricted reader see different columns, and
+    a restart or a renamed service changes the endpoint. Neither is a different
+    source, so both keep the same enrollment.
     """
-    from rainstone.adapters.galaxy_db import read_source_identity
-    from rainstone.bootstrap import enroll_source_identity, provision_reader, reader_dsn, seed_instance
-    from rainstone.collector import SourceBindingMismatch, ensure_binding
+    from rainstone.bootstrap import provision_reader, reader_dsn
+    from rainstone.enrollment import (
+        SourceEvidence,
+        ensure_enrollment,
+        verify_enrollment,
+    )
 
     role = "rainstone_identity_reader"
     password = "ffffGGGG2222-_test"
@@ -505,12 +527,7 @@ def test_identity_follows_the_source_database_not_its_schema(source_engine) -> N
                 connection.execute(text(f'DROP ROLE "{role}"'))
 
     remove_role()
-    settings = Settings(
-        auth_mode="development", demo_data=True, tenant_slug=f"identity-{uuid.uuid4().hex[:8]}"
-    )
-    with engine.begin() as connection:
-        # Start from an unenrolled source so first enrolment is exercised.
-        connection.execute(text("DROP SCHEMA IF EXISTS rainstone CASCADE"))
+    settings = _settings("identity")
     try:
         with source_engine.begin() as connection:
             database = connection.execute(text("SELECT current_database()")).scalar()
@@ -518,118 +535,112 @@ def test_identity_follows_the_source_database_not_its_schema(source_engine) -> N
                 connection, role=role, password=password, database=database,
                 schema=SCHEMA, rotate=True,
             )
-            identity, created = enroll_source_identity(connection, role=role)
-        assert created is True
-        with source_engine.begin() as connection:
-            again, created_again = enroll_source_identity(connection, role=role)
-        assert (again, created_again) == (identity, False)
-
         admin_capabilities = discover_capabilities(source_engine)
         reader = create_engine(
             reader_dsn(str(engine.url.render_as_string(hide_password=False)), role, password),
             connect_args={"options": f"-csearch_path={SCHEMA}"},
         )
         reader_capabilities = discover_capabilities(reader)
-        # The reader legitimately sees fewer columns, and still reads the identity.
+        # The reader legitimately sees fewer columns, and reads the same source.
         assert reader_capabilities.schema_fingerprint != admin_capabilities.schema_fingerprint
-        assert read_source_identity(reader) == identity
-        assert reader_capabilities.source_identity == identity
+        assert reader_capabilities.source_fingerprint == admin_capabilities.source_fingerprint
+        assert admin_capabilities.fingerprint_status == "present"
 
+        admin_evidence = SourceEvidence(
+            endpoint="galaxy-postgres-rw:5432/galaxy",
+            fingerprint=admin_capabilities.source_fingerprint,
+            fingerprint_status=admin_capabilities.fingerprint_status,
+        )
         with Session(engine) as session:
-            seed_instance(
-                session, settings, admin_capabilities,
-                owner_source_id="1", owner_label="researcher",
-                descriptor={}, source_identity=identity,
+            _, binding, notes = ensure_enrollment(
+                session, settings, admin_capabilities, admin_evidence
             )
-            # Collection uses the restricted reader's view and still matches.
-            ensure_binding(
-                session,
-                settings,
-                source_identity=reader_capabilities.source_identity,
-                schema_fingerprint=reader_capabilities.schema_fingerprint,
-                version=reader_capabilities.source_version,
-            )
-            # A different database with an identical schema is refused.
-            with pytest.raises(SourceBindingMismatch, match="not the source this instance"):
-                ensure_binding(session, settings, source_identity=str(uuid.uuid4()))
+            enrollment_uuid = binding.enrollment_uuid
+            session.commit()
+        assert notes["action"] == "enrolled"
+
+        # The collector reads through the restricted reader, from a service that
+        # has since been renamed: the same enrollment continues.
+        moved = SourceEvidence(
+            endpoint="galaxy-postgres-primary:5432/galaxy",
+            fingerprint=reader_capabilities.source_fingerprint,
+            fingerprint_status=reader_capabilities.fingerprint_status,
+        )
+        with Session(engine) as session:
+            resumed = verify_enrollment(session, settings, reader_capabilities, moved)
+            assert resumed.enrollment_uuid == enrollment_uuid
+            assert resumed.source_endpoint == "galaxy-postgres-primary:5432/galaxy"
         reader.dispose()
     finally:
         remove_role()
-        with Session(engine) as session:
-            tenant = session.get(Tenant, stable_id("tenant", settings.tenant_slug))
-            if tenant is not None:
-                session.delete(tenant)
-                session.commit()
+        _drop_tenants(settings.tenant_slug)
 
 
-def test_a_different_source_needs_its_own_instance_rather_than_rebinding(source_engine) -> None:
-    """Rebinding would merge two databases' job histories, so it is refused."""
-    from rainstone.bootstrap import seed_instance
-
-    settings = Settings(
-        auth_mode="development", demo_data=True, tenant_slug=f"replace-{uuid.uuid4().hex[:8]}"
+def test_collection_refuses_a_source_that_is_not_the_enrolled_one(source_engine) -> None:
+    """Merging two databases' job histories is refused, not reconciled."""
+    from rainstone.enrollment import (
+        SourceEvidence,
+        SourceNotEnrolled,
+        SourceReplacementDetected,
+        ensure_enrollment,
+        verify_enrollment,
     )
+
+    settings = _settings("replace")
     capabilities = discover_capabilities(source_engine)
-    original, replacement = str(uuid.uuid4()), str(uuid.uuid4())
+    original = SourceEvidence(
+        endpoint="galaxy-postgres-rw:5432/galaxy", fingerprint="a" * 64, fingerprint_status="present"
+    )
+    replacement = SourceEvidence(
+        endpoint="galaxy-postgres-rw:5432/galaxy", fingerprint="b" * 64, fingerprint_status="present"
+    )
     try:
         with Session(engine) as session:
-            seed_instance(
-                session, settings, capabilities, owner_source_id="1", owner_label="researcher",
-                descriptor={}, source_identity=original,
-            )
-            with pytest.raises(RuntimeError, match="new instance identity"):
-                seed_instance(
-                    session, settings, capabilities, owner_source_id="1",
-                    owner_label="researcher", descriptor={}, source_identity=replacement,
-                )
-            session.rollback()
-            # Re-running against the same source stays idempotent.
-            again = seed_instance(
-                session, settings, capabilities, owner_source_id="1", owner_label="researcher",
-                descriptor={}, source_identity=original,
-            )
-            assert again["source_identity"] == original
-    finally:
+            with pytest.raises(SourceNotEnrolled):
+                verify_enrollment(session, settings, capabilities, original)
+            ensure_enrollment(session, settings, capabilities, original)
+            session.commit()
         with Session(engine) as session:
-            tenant = session.get(Tenant, stable_id("tenant", settings.tenant_slug))
-            if tenant is not None:
-                session.delete(tenant)
-                session.commit()
+            with pytest.raises(SourceReplacementDetected, match="different Galaxy database"):
+                verify_enrollment(session, settings, capabilities, replacement)
+    finally:
+        _drop_tenants(settings.tenant_slug)
 
 
-def test_a_legacy_binding_adopts_the_identity_it_finds(source_engine) -> None:
-    """Upgrading from 0004 records an identity without a replacement override."""
-    from rainstone.bootstrap import LEGACY_IDENTITY, seed_instance
-    from rainstone.models import SourceBinding
+def test_replacing_a_source_opens_a_new_namespace_and_keeps_the_old_history(
+    source_engine,
+) -> None:
+    """Old facts stay readable under a retired slug; new ones start fresh."""
+    from rainstone.enrollment import SourceEvidence, ensure_enrollment
 
-    settings = Settings(
-        auth_mode="development", demo_data=True, tenant_slug=f"legacy-{uuid.uuid4().hex[:8]}"
-    )
+    settings = _settings("newsrc")
     capabilities = discover_capabilities(source_engine)
-    identity = str(uuid.uuid4())
-    tenant_id = stable_id("tenant", settings.tenant_slug)
+    original = SourceEvidence(
+        endpoint="galaxy-postgres-rw:5432/galaxy", fingerprint="c" * 64, fingerprint_status="present"
+    )
+    replacement = SourceEvidence(
+        endpoint="galaxy-postgres-rw:5432/galaxy", fingerprint="d" * 64, fingerprint_status="present"
+    )
     try:
         with Session(engine) as session:
-            seed_instance(
-                session, settings, capabilities, owner_source_id="1", owner_label="researcher",
-                descriptor={}, source_identity=LEGACY_IDENTITY,
-            )
-            binding = session.scalar(
-                select(SourceBinding).where(SourceBinding.tenant_id == tenant_id)
-            )
-            instance_uuid = binding.instance_uuid
-            result = seed_instance(
-                session, settings, capabilities, owner_source_id="1", owner_label="researcher",
-                descriptor={}, source_identity=identity,
-            )
-            assert result["source_identity"] == identity
-            assert result["instance_uuid"] == str(instance_uuid)
-    finally:
+            _, first, _ = ensure_enrollment(session, settings, capabilities, original)
+            first_tenant, first_enrollment = first.tenant_id, first.enrollment_uuid
+            session.commit()
         with Session(engine) as session:
-            tenant = session.get(Tenant, tenant_id)
-            if tenant is not None:
-                session.delete(tenant)
-                session.commit()
+            tenant, second, notes = ensure_enrollment(
+                session, settings, capabilities, replacement, reenroll=True
+            )
+            session.commit()
+            assert notes["action"] == "re-enrolled"
+            assert notes["retired_as"].startswith(settings.tenant_slug)
+            assert second.tenant_id != first_tenant
+            assert second.enrollment_uuid != first_enrollment
+            assert tenant.slug == settings.tenant_slug
+            retired = session.get(Tenant, first_tenant)
+            assert retired is not None
+            assert retired.archived_at is not None
+    finally:
+        _drop_tenants(settings.tenant_slug)
 
 
 def test_two_instances_keep_overlapping_source_ids_apart(source_engine) -> None:
@@ -691,7 +702,7 @@ def test_provisioned_reader_role_has_least_privilege_reads(source_engine) -> Non
     """The scoped role reads allowlisted columns and nothing else."""
     from urllib.parse import quote
 
-    from rainstone.bootstrap import enroll_source_identity, provision_reader, reader_dsn
+    from rainstone.bootstrap import provision_reader, reader_dsn
 
     role = "rainstone_reader_test"
     password = "aaaaBBBB1111-_test"
@@ -717,7 +728,6 @@ def test_provisioned_reader_role_has_least_privilege_reads(source_engine) -> Non
                 schema=SCHEMA,
                 rotate=True,
             )
-            enroll_source_identity(connection, role=role)
         dsn = reader_dsn(str(engine.url.render_as_string(hide_password=False)), role, password)
         assert quote(password, safe="") in dsn
         reader = create_engine(
@@ -732,9 +742,11 @@ def test_provisioned_reader_role_has_least_privilege_reads(source_engine) -> Non
             assert connection.execute(
                 text("SELECT count(*) FROM implicit_collection_jobs_job_association")
             ).scalar() >= 2
+            # The shared account is matched by email, so that column is
+            # readable; the reader still cannot read a password or a command line.
             assert connection.execute(
-                text("SELECT count(*) FROM rainstone.source_identity")
-            ).scalar() == 1
+                text("SELECT count(*) FROM galaxy_user WHERE email = 'nobody@example.org'")
+            ).scalar() == 0
             for forbidden in (
                 "SELECT command_line FROM job LIMIT 1",
                 "SELECT password FROM galaxy_user LIMIT 1",
@@ -749,3 +761,52 @@ def test_provisioned_reader_role_has_least_privilege_reads(source_engine) -> Non
         reader.dispose()
     finally:
         remove_role()
+
+
+def test_the_shared_account_resolves_by_name_id_or_configured_email(source_engine) -> None:
+    """Discovery reads whatever Galaxy is configured with, often an email."""
+    from rainstone.auth import _resolve_configured_account
+    from rainstone.doctor import readiness
+    from rainstone.enrollment import (
+        SourceAccountUnresolved,
+        SourceEvidence,
+        resolve_shared_account,
+        seed_instance,
+    )
+
+    for account in ("researcher", "1", "hidden@example.invalid"):
+        assert resolve_shared_account(source_engine, account) == ("1", "researcher")
+    with pytest.raises(SourceAccountUnresolved, match="does not exist"):
+        resolve_shared_account(source_engine, "nobody@example.invalid")
+
+    settings = _settings("configured")
+    capabilities = discover_capabilities(source_engine)
+    evidence = SourceEvidence(
+        endpoint="galaxy-postgres-rw:5432/galaxy",
+        fingerprint=capabilities.source_fingerprint,
+        fingerprint_status=capabilities.fingerprint_status,
+    )
+    try:
+        with Session(engine) as session:
+            seed_instance(
+                session, settings, capabilities, evidence,
+                owner_source_id="1", owner_label="researcher",
+                configured_as="hidden@example.invalid", descriptor={},
+            )
+            tenant = session.scalar(select(Tenant).where(Tenant.slug == settings.tenant_slug))
+            # The string an operator configured still selects the one owner it
+            # resolved to at enrolment.
+            for account in ("1", "researcher", "hidden@example.invalid"):
+                assert _resolve_configured_account(session, tenant, account).source_id == "1"
+                # Readiness must agree: a pod that serves reports while
+                # readiness calls the scope unresolved, or the reverse, is worse
+                # than either answer on its own.
+                workspace = Settings(
+                    auth_mode="anvil-workspace",
+                    demo_data=False,
+                    tenant_slug=settings.tenant_slug,
+                    workspace_owner_source_id=account,
+                )
+                assert readiness(session, workspace)["facts"]["workspace_account_matches"] == 1
+    finally:
+        _drop_tenants(settings.tenant_slug)

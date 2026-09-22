@@ -33,7 +33,7 @@ services:
       - -c
       - >-
         alembic upgrade head &&
-        rainstone catalog import --path catalog/gcp-us-central1-2026-09-19.json &&
+        rainstone catalog import --path catalog/gcp-2026-09-19.json &&
         rainstone ingest-fixtures --path fixtures/phase1.json
     volumes:
       - ./backend:/app/backend
@@ -152,7 +152,7 @@ services:
       - -c
       - >-
         alembic upgrade head &&
-        rainstone catalog import --path catalog/gcp-us-central1-2026-09-19.json &&
+        rainstone catalog import --path catalog/gcp-2026-09-19.json &&
         rainstone ingest-fixtures --path fixtures/phase1.json &&
         uvicorn rainstone.main:app --host 0.0.0.0 --port 8000
     healthcheck:

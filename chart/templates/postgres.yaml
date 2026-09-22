@@ -1,4 +1,7 @@
 {{- if and .Values.database.deploy (not .Values.database.existingSecret) }}
+{{- if and (not .Values.database.storageClass) (not .Values.database.acknowledgeEphemeralStorage) }}
+{{- fail "database.storageClass must name a storage class whose volumes survive stop, resume and reinstall: Rainstone's reporting history and its source enrolment identity live there, and the cluster default is not necessarily durable. Set database.acknowledgeEphemeralStorage=true only for a throwaway install." }}
+{{- end }}
 apiVersion: v1
 kind: Service
 metadata:

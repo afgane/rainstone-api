@@ -15,22 +15,21 @@ action.
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
-from urllib.parse import urlsplit
 
-from sqlalchemy import create_engine, select, text
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from rainstone.adapters.galaxy_db import discover_capabilities
 from rainstone.catalog import coverage as catalog_coverage
 from rainstone.config import Settings, get_settings
 from rainstone.costing import CALCULATION_VERSION
+from rainstone.enrollment import configured_owners, source_engine
 from rainstone.models import (
     CapabilityReport,
     CostRevision,
     IngestionState,
     InstallationRecord,
     ObservationGap,
-    Owner,
     SourceBinding,
     Tenant,
 )
@@ -44,14 +43,6 @@ class Check:
     status: str
     detail: str
     facts: dict = field(default_factory=dict)
-
-
-def _endpoint(url: str | None) -> str:
-    """Host and port only: never a DSN with credentials."""
-    if not url:
-        return "unset"
-    parts = urlsplit(url)
-    return f"{parts.hostname or 'unknown'}:{parts.port}" if parts.port else (parts.hostname or "unknown")
 
 
 def _application_database(session: Session) -> list[Check]:
@@ -92,14 +83,14 @@ def _instance_identity(session: Session, settings: Settings) -> list[Check]:
             Check(
                 "instance_identity",
                 "fail",
-                f"No seeded tenant '{settings.tenant_slug}'; run bootstrap.",
+                f"No enrolled instance '{settings.tenant_slug}'; run `rainstone enroll`.",
             )
         ]
     binding = session.scalar(select(SourceBinding).where(SourceBinding.tenant_id == tenant.id))
     if binding is not None:
-        status, detail = "pass", "Instance identity is seeded and bound to a source database."
-    elif settings.galaxy_database_url:
-        status, detail = "fail", "Instance identity has no source binding; run bootstrap."
+        status, detail = "pass", "Instance identity is enrolled with a source database."
+    elif settings.galaxy_source_url is not None:
+        status, detail = "fail", "This instance has no source enrollment; run `rainstone enroll`."
     else:
         # Fixture and demo installations collect from no source, so there is
         # nothing to bind an identity to yet.
@@ -112,6 +103,8 @@ def _instance_identity(session: Session, settings: Settings) -> list[Check]:
             {
                 "tenant": tenant.slug,
                 "instance_uuid": str(binding.instance_uuid) if binding else None,
+                "enrollment_uuid": str(binding.enrollment_uuid) if binding else None,
+                "source_endpoint": binding.source_endpoint if binding else None,
                 "source_version": tenant.source_version,
                 "descriptor": (binding.descriptor if binding else {}),
             },
@@ -119,14 +112,7 @@ def _instance_identity(session: Session, settings: Settings) -> list[Check]:
     ]
     if settings.auth_mode == "anvil-workspace":
         account = settings.workspace_owner_source_id
-        owners = list(
-            session.scalars(
-                select(Owner).where(
-                    Owner.tenant_id == tenant.id,
-                    (Owner.source_id == account) | (Owner.label == account),
-                )
-            )
-        )
+        owners = configured_owners(session, tenant.id, account)
         checks.append(
             Check(
                 "workspace_account",
@@ -146,11 +132,11 @@ def _instance_identity(session: Session, settings: Settings) -> list[Check]:
 
 
 def _galaxy_source(settings: Settings) -> list[Check]:
-    if not settings.galaxy_database_url:
+    if settings.galaxy_source_url is None:
         return [Check("galaxy_source", "skip", "No Galaxy source database is configured.")]
-    endpoint = _endpoint(settings.galaxy_database_url)
+    endpoint = settings.galaxy_source_endpoint or "unset"
     try:
-        engine = create_engine(settings.galaxy_database_url, pool_pre_ping=True)
+        engine = source_engine(settings, pool_size=1)
         capabilities = discover_capabilities(
             engine, statement_timeout=settings.galaxy_statement_timeout
         )
@@ -162,16 +148,27 @@ def _galaxy_source(settings: Settings) -> list[Check]:
                 f"Galaxy source is unreachable at {endpoint} ({type(error).__name__}).",
             )
         ]
-    identity_detail = {
-        "present": "the enrolled source identity is readable",
-        "absent": "no source identity is enrolled; run bootstrap against this database",
-        "denied": "the reader may not read the source identity; re-run bootstrap",
-    }.get(capabilities.identity_status, capabilities.identity_status)
+    privilege_detail = {
+        "application-credential": (
+            "Reads use Galaxy's own application credential. Read-only transactions, "
+            "allowlisted statements, a statement timeout and a bounded pool are enforced by "
+            "Rainstone, not by the database: this credential retains Galaxy's write privileges."
+        ),
+        "provisioned-reader": (
+            "Reads use a provisioned role whose column-level grants the database enforces."
+        ),
+    }[settings.galaxy_source_privilege]
+    fingerprint_detail = {
+        "present": "the source's corroborating fingerprint is readable",
+        "empty": "this Galaxy has no jobs yet, so no fingerprint can be read",
+        "denied": "the source credential may not read the job table",
+        "unavailable": "the fingerprint probe could not run",
+    }.get(capabilities.fingerprint_status, capabilities.fingerprint_status)
     return [
         Check(
             "galaxy_source",
             "pass" if capabilities.compatible else "fail",
-            "Galaxy schema is compatible and readable with the scoped role."
+            "Galaxy schema is compatible and readable."
             if capabilities.compatible
             else "Galaxy schema or grants are insufficient.",
             {
@@ -181,13 +178,17 @@ def _galaxy_source(settings: Settings) -> list[Check]:
             },
         ),
         Check(
-            "source_identity",
-            "pass" if capabilities.identity_status == "present" else "fail",
-            f"Source identity: {identity_detail}.",
-            {
-                "status": capabilities.identity_status,
-                "source_identity": capabilities.source_identity,
-            },
+            "source_privilege",
+            "pass" if settings.galaxy_source_privilege == "provisioned-reader" else "warn",
+            privilege_detail,
+            {"mode": settings.galaxy_source_privilege},
+        ),
+        Check(
+            "source_evidence",
+            "pass" if capabilities.fingerprint_status in {"present", "empty"} else "warn",
+            f"Source evidence: {fingerprint_detail}. Enrollment identity lives in Rainstone's "
+            "own database; this is corroboration, not proof of which database answered.",
+            {"fingerprint_status": capabilities.fingerprint_status},
         ),
     ]
 
@@ -427,7 +428,7 @@ def _collection(session: Session, settings: Settings) -> list[Check]:
     return checks
 
 
-SOURCE_CONTEXTS = ("collector", "bootstrap")
+SOURCE_CONTEXTS = ("collector", "installation")
 STALE_AFTER = timedelta(minutes=15)
 
 
@@ -441,7 +442,7 @@ def run_checks(
 ) -> dict:
     """Run the probes this process can actually perform.
 
-    Only the collector and bootstrap hold source and cloud credentials, so the
+    Only the collector and installation hold source and cloud credentials, so the
     web context runs local checks and reports their recorded findings instead of
     skipping probes it could never run.
     """
@@ -482,7 +483,7 @@ def _recorded(session: Session, tenant_id: uuid.UUID, context: str) -> Capabilit
 
 
 def _merge_recorded(session: Session, settings: Settings, report: dict) -> dict:
-    """Add the collector's current findings and bootstrap's installation history.
+    """Add the collector's current findings and installation's recorded history.
 
     The collector is expected continuously, so its report ages into warnings.
     Bootstrap runs once per installation: its findings are history, they never
@@ -540,25 +541,25 @@ def _merge_recorded(session: Session, settings: Settings, report: dict) -> dict:
                 )
             current.append(entry)
 
-    bootstrap = _recorded(session, tenant.id, "bootstrap") if tenant is not None else None
-    if bootstrap is not None:
-        age = now - bootstrap.generated_at
+    installed = _recorded(session, tenant.id, "installation") if tenant is not None else None
+    if installed is not None:
+        age = now - installed.generated_at
         sources.append(
             {
-                "context": "bootstrap",
-                "generated_at": bootstrap.generated_at.isoformat(),
+                "context": "installation",
+                "generated_at": installed.generated_at.isoformat(),
                 "age_seconds": int(age.total_seconds()),
                 "stale": False,
-                "overall_status": bootstrap.overall_status,
+                "overall_status": installed.overall_status,
                 "kind": "history",
             }
         )
-        for check in bootstrap.report.get("checks", []):
+        for check in installed.report.get("checks", []):
             if check["name"] in collector_names:
                 # A current check of the same capability supersedes it.
                 continue
             entry = dict(check)
-            entry["name"] = f"bootstrap:{entry['name']}"
+            entry["name"] = f"installation:{entry['name']}"
             entry["history"] = True
             entry["detail"] = (
                 f"{entry['detail']} (recorded during installation "
@@ -566,8 +567,8 @@ def _merge_recorded(session: Session, settings: Settings, report: dict) -> dict:
             )
             entry["facts"] = {
                 **entry.get("facts", {}),
-                "recorded_at": bootstrap.generated_at.isoformat(),
-                "recorded_by": "bootstrap",
+                "recorded_at": installed.generated_at.isoformat(),
+                "recorded_by": "installation",
                 "history": True,
             }
             history.append(entry)
@@ -636,14 +637,7 @@ def readiness(session: Session, settings: Settings | None = None) -> dict:
         reasons.append(f"instance '{settings.tenant_slug}' is not seeded yet")
     elif settings.auth_mode == "anvil-workspace":
         account = settings.workspace_owner_source_id
-        owners = list(
-            session.scalars(
-                select(Owner).where(
-                    Owner.tenant_id == tenant.id,
-                    (Owner.source_id == account) | (Owner.label == account),
-                )
-            )
-        )
+        owners = configured_owners(session, tenant.id, account)
         facts["workspace_account_matches"] = len(owners)
         if len(owners) != 1:
             reasons.append(

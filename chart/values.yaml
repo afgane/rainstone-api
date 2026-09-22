@@ -1,6 +1,9 @@
-# Operator-facing settings. Everything else is supplied by boot or defaulted.
+# Operator-facing settings. `rainstone discover` resolves most of these from
+# what the cluster and the Galaxy host already record; the rest are the choices
+# that are genuinely an operator's: where Rainstone runs and where its data
+# lives.
 image:
-  repository: ghcr.io/galaxyproject/rainstone
+  repository: docker.io/afgane/rainstone
   tag: ""            # defaults to .Chart.AppVersion
   pullPolicy: IfNotPresent
 
@@ -18,44 +21,81 @@ ingress:
 service:
   port: 8000
 
+# Galaxy links sibling applications from its masthead through a webhook, which
+# is how the Kubernetes monitor is surfaced. The chart ships the webhook
+# ConfigMap; Galaxy's own release mounts it, because only Galaxy's deployment
+# can add a volume to Galaxy's pod. See chart/templates/webhook.yaml.
+galaxyWebhook:
+  enabled: true
+  id: rainstone
+  icon: fa-dollar-sign
+  tooltip: Compute cost
+
 # Identity. `anvil-workspace` reports one fixed tenant and shared Galaxy
 # account behind the platform's external admission boundary.
 auth:
   mode: anvil-workspace
-  workspaceOwner: ""            # Galaxy account name or source ID, resolved by bootstrap
+  workspaceOwner: ""            # Galaxy username, numeric ID or exact email
   workspaceInfrastructureVisible: true
 
 instance:
-  slug: ""                      # stable instance identity supplied by boot
+  slug: ""                      # stable instance identity; discovery supplies one
   displayName: Galaxy deployment
 
-# Rainstone's own database: either an existing DSN Secret or the bundled
-# PostgreSQL deployment. Storage is retained on uninstall by default.
+# Rainstone's own database: either an existing DSN Secret or the chart's own
+# PostgreSQL deployment. It is a separate database from Galaxy's and never
+# shares Galaxy's PostgreSQL data directory.
 database:
   existingSecret: ""            # Secret with key `dsn`
   existingSecretKey: dsn
   deploy: true
   image: postgres:17.6-alpine
+  # Reporting history and the enrollment identity live here, so the storage
+  # class must be one that survives stop, resume and reinstall. The chart
+  # refuses to render without a decision rather than landing on whatever the
+  # cluster's default happens to be.
   storageClass: ""
+  acknowledgeEphemeralStorage: false
   size: 10Gi
   retainOnDelete: true
   name: rainstone
   user: rainstone
   passwordSecret: ""            # Secret with key `password`; generated when empty
 
-# Galaxy source access. Initialization uses `adminSecret` once, with
-# installation-time privileges, to provision a scoped reader, enroll this
-# source's identity, and write the reader DSN into `dsnSecret`. The application
-# only ever receives `dsnSecret`.
+# Galaxy source access. The default profile reads Galaxy with a credential that
+# already exists and changes nothing in Galaxy's database: no schema, no
+# identity table, no role creation and no administrator login.
 source:
-  adminSecret: ""               # Secret with key `dsn`; used only by initialization
-  adminSecretKey: dsn
-  dsnSecret: ""                 # defaults to <release>-source, written by initialization
+  # Galaxy's own application credential, as a Secret reference plus the service
+  # it connects to. Never the PostgreSQL superuser Secret.
+  existingSecret: ""
+  usernameKey: username
+  passwordKey: password
+  host: ""
+  port: 5432
+  database: galaxy
+  sslMode: ""
+  options: ""                   # extra connection parameters, `a=b&c=d`
+  # A complete DSN Secret instead, for standalone deployments that keep one.
+  dsnSecret: ""
   dsnSecretKey: dsn
-  sharedAccount: ""             # Galaxy account this deployment reports on
+  # Optional, explicitly enabled provisioning: create a dedicated read-only
+  # role in Galaxy's database and publish its credential, so the database
+  # enforces the read-only boundary rather than Rainstone enforcing it. This
+  # needs an installation-time credential with rights to create roles and
+  # grants; it creates no Rainstone tables in Galaxy.
+  provisionReader:
+    enabled: false
+    role: rainstone_reader
+    adminSecret: ""
+    adminSecretKey: dsn
+  sharedAccount: ""             # defaults to auth.workspaceOwner
   statementTimeout: 30s
   batchSize: 500
   replayOverlapSeconds: 300
+  # Non-secret deployment evidence recorded alongside the enrollment, such as a
+  # boot run or disk identifier. Corroboration only; never identity.
+  deploymentEvidence: ""
 
 collector:
   enabled: true
@@ -63,7 +103,11 @@ collector:
     enabled: true
     namespace: ""               # defaults to the release namespace
   gcpBatch:
-    enabled: true
+    # `auto` observes Batch whenever a project and location are configured.
+    # Cloud reads use the identity this deployment already has — the VM's
+    # metadata credential, or Workload Identity where a cluster already uses
+    # it. Missing permissions are reported as gaps, never assumed.
+    enabled: auto
     project: ""
     location: ""
     enrichCompute: true
@@ -71,13 +115,15 @@ collector:
   intervalSeconds: 30
   batchRefreshSeconds: 30
 
-# Versioned baseline accounting policy for the existing Galaxy VM.
+# Versioned baseline accounting policy for the Galaxy server already running.
+# Discovery reads these from the host's own metadata.
 baseline:
   policyVersion: ""
   resourceUid: ""
   machineType: ""
   region: ""
   zone: ""
+  nodeNames: ""                 # what Kubernetes calls the same machine
   destinations: ""              # comma-separated Galaxy destination IDs
   runners: local
 
@@ -98,21 +144,26 @@ retentionDays: 0                # 0 keeps all collected history
 
 diagnosticsEnabled: true
 
+# Requests are a scheduling floor, not an allocation. Rainstone reports on a
+# cluster whose capacity belongs to Galaxy's jobs — on a small node each job pod
+# may request a whole CPU — so it reserves little and bursts into idle capacity
+# under its limits instead.
 web:
   replicas: 1
   resources:
-    requests: {cpu: 100m, memory: 256Mi}
+    requests: {cpu: 25m, memory: 128Mi}
     limits: {cpu: "1", memory: 1Gi}
 
 collectorResources:
-  requests: {cpu: 100m, memory: 256Mi}
+  requests: {cpu: 25m, memory: 128Mi}
   limits: {cpu: "1", memory: 1Gi}
 
-# Separate identities: the web process must not hold observation or cloud
-# permissions. Note that Workload Identity bindings belong on the collector and
-# initialization accounts only; on a node whose metadata server is reachable by
-# any pod, that node-wide credential is a deployment-level limitation these
-# accounts cannot remove.
+# Separate identities: the web process must not hold observation permissions or
+# the source credential. Note the inherited trust model — on a node whose
+# metadata server is reachable by any pod, that node-wide cloud credential is
+# available regardless of these accounts. That is a property of the platform,
+# not something these accounts remove, and restricting it is not a prerequisite
+# this chart imposes on installation.
 serviceAccounts:
   create: true
   web:
@@ -120,7 +171,7 @@ serviceAccounts:
     annotations: {}
   collector:
     name: ""
-    annotations: {}             # workload identity annotation for cloud reads
+    annotations: {}             # Workload Identity annotation, where one is used
   init:
     name: ""
     annotations: {}

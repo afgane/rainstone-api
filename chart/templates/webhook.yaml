@@ -1,0 +1,38 @@
+{{- if .Values.galaxyWebhook.enabled }}
+{{/*
+Galaxy surfaces a sibling application through a masthead webhook — the same way
+the Kubernetes monitor is linked — rather than through a link the platform's
+proxy never routes.
+
+The chart owns this ConfigMap. Mounting it is Galaxy's own deployment's job,
+because only that deployment can add a volume to Galaxy's pod, so the Galaxy
+release needs one extra volume and mount:
+
+    extraVolumes:
+      - name: webhook-rainstone
+        configMap:
+          name: {{ include "rainstone.fullname" . }}-webhook
+    extraVolumeMounts:
+      - name: webhook-rainstone
+        mountPath: /galaxy/server/config/plugins/webhooks-custom/{{ .Values.galaxyWebhook.id }}
+        readOnly: true
+
+Rainstone is reachable at its own path with or without the webhook; the webhook
+only puts it in the masthead.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "rainstone.fullname" . }}-webhook
+  labels: {{- include "rainstone.labels" . | nindent 4 }}
+data:
+  config.yml: |
+    id: {{ .Values.galaxyWebhook.id }}
+    type:
+      - masthead
+    activate: true
+    icon: {{ .Values.galaxyWebhook.icon }}
+    tooltip: {{ .Values.galaxyWebhook.tooltip }}
+    function: >
+      window.open(window.location.origin + '{{ .Values.basePath }}', '_blank');
+{{- end }}

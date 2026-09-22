@@ -323,16 +323,12 @@ SETTLED_INVOCATION_STEPS = text("""
 
 VERSION_PROBE = text("SELECT version_num FROM alembic_version LIMIT 1")
 
-# The source-lifetime identifier is enrolled in the source database itself, so
-# it survives upgrades and restores of that database and cannot be confused with
-# a different database that happens to share a schema.
-SOURCE_IDENTITY_SCHEMA = "rainstone"
-SOURCE_IDENTITY_TABLE = "source_identity"
-SOURCE_IDENTITY_PROBE = text(
-    f"SELECT identity::text AS identity, enrolled_at "
-    f"FROM {SOURCE_IDENTITY_SCHEMA}.{SOURCE_IDENTITY_TABLE} "
-    "ORDER BY enrolled_at LIMIT 1"
-)
+# Rainstone writes nothing to the source database, so it has no identifier of
+# its own there. The oldest job row is corroborating evidence that the endpoint
+# still holds the database this instance enrolled with. It is a replacement
+# alarm, never proof of identity: a restored copy carries the same oldest job,
+# and a read-only client cannot observe the deployment event behind an endpoint.
+SOURCE_FINGERPRINT_PROBE = text("SELECT id, create_time FROM job ORDER BY id LIMIT 1")
 
 SCHEMA_PROBE = text("""
     SELECT table_name, column_name
@@ -344,61 +340,54 @@ SCHEMA_PROBE = text("""
 
 @dataclass(frozen=True)
 class GalaxyCapabilities:
-    """What this connection can read. Capability is not identity.
+    """What this connection can read, plus evidence about which database it is.
 
     `schema_fingerprint` reflects the columns *this* role can see, so an
-    administrator and a column-restricted reader legitimately disagree. Use
-    `source_identity` to decide whether two connections describe the same
-    database.
+    administrator and a column-restricted reader legitimately disagree; it is a
+    capability record, not identity. `source_fingerprint` is corroborating
+    evidence only: enrollment identity lives in Rainstone's own database.
     """
 
     compatible: bool
     schema_fingerprint: str
     source_version: str | None
-    source_identity: str | None = None
-    identity_status: str = "unknown"
+    source_fingerprint: str | None = None
+    fingerprint_status: str = "unknown"
     missing: tuple[str, ...] = ()
     details: dict = field(default_factory=dict)
 
 
-class SourceIdentityUnavailable(RuntimeError):
-    """The source-lifetime identifier could not be read."""
-
-    def __init__(self, status: str, detail: str) -> None:
-        super().__init__(detail)
-        self.status = status
-
-
-def read_source_identity(engine: Engine, *, statement_timeout: str = "30s") -> str:
-    """Read the enrolled source-lifetime identifier with the current role."""
+def read_source_fingerprint(engine: Engine, *, statement_timeout: str = "30s") -> tuple[str | None, str]:
     with engine.connect() as connection:
         _read_only(connection, statement_timeout)
-        return _read_source_identity(connection)
+        return _fingerprint_in_savepoint(connection)
 
 
-def _read_source_identity(connection: Connection) -> str:
+def _fingerprint_in_savepoint(connection: Connection) -> tuple[str | None, str]:
+    """Probe inside a savepoint, so a denial does not abort the enclosing work."""
     try:
-        row = connection.execute(SOURCE_IDENTITY_PROBE).mappings().first()
-    except Exception as error:  # noqa: BLE001 - classified below for diagnostics
-        message = str(error).lower()
-        if "permission denied" in message:
-            raise SourceIdentityUnavailable(
-                "denied",
-                "the reader role may not read the source identity table; re-run bootstrap "
-                "so it can grant that access",
-            ) from error
-        if "does not exist" in message or "undefined" in message:
-            raise SourceIdentityUnavailable(
-                "absent",
-                "this source database has no enrolled Rainstone identity; run bootstrap "
-                "against it before collecting",
-            ) from error
-        raise SourceIdentityUnavailable("unavailable", str(error)) from error
+        with connection.begin_nested():
+            return _read_source_fingerprint(connection), "present"
+    except _NoJobRows:
+        # A Galaxy that has never run a job is legitimately unfingerprintable.
+        return None, "empty"
+    except Exception as error:  # noqa: BLE001 - classified for diagnostics
+        denied = "permission denied" in str(error).lower()
+        return None, "denied" if denied else "unavailable"
+
+
+class _NoJobRows(Exception):
+    """The source has no job rows to fingerprint yet."""
+
+
+def _read_source_fingerprint(connection: Connection) -> str:
+    """Hash the oldest job row: the same database keeps the same oldest job."""
+    row = connection.execute(SOURCE_FINGERPRINT_PROBE).mappings().first()
     if row is None:
-        raise SourceIdentityUnavailable(
-            "absent", "the source identity table is empty; run bootstrap against this database"
-        )
-    return row["identity"]
+        raise _NoJobRows
+    created = _utc(row["create_time"])
+    material = f"{row['id']}:{created.isoformat() if created else ''}"
+    return hashlib.sha256(material.encode()).hexdigest()
 
 
 def _read_only(connection: Connection, statement_timeout: str) -> None:
@@ -414,17 +403,9 @@ def _utc(value: datetime | None) -> datetime | None:
 
 
 def discover_capabilities(engine: Engine, *, statement_timeout: str = "30s") -> GalaxyCapabilities:
-    identity: str | None = None
-    identity_status = "present"
     with engine.connect() as connection:
         _read_only(connection, statement_timeout)
-        try:
-            # A savepoint keeps a missing or forbidden identity table from
-            # aborting the capability probes that follow.
-            with connection.begin_nested():
-                identity = _read_source_identity(connection)
-        except SourceIdentityUnavailable as error:
-            identity_status = error.status
+        source_fingerprint, fingerprint_status = _fingerprint_in_savepoint(connection)
         present: dict[str, set[str]] = {}
         for row in connection.execute(
             SCHEMA_PROBE, {"tables": list(REQUIRED_TABLES)}
@@ -448,8 +429,8 @@ def discover_capabilities(engine: Engine, *, statement_timeout: str = "30s") -> 
         compatible=not missing,
         schema_fingerprint=fingerprint,
         source_version=version,
-        source_identity=identity,
-        identity_status=identity_status,
+        source_fingerprint=source_fingerprint,
+        fingerprint_status=fingerprint_status,
         missing=tuple(missing),
         details={"tables": {table: sorted(columns) for table, columns in present.items()}},
     )

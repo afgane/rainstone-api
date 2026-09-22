@@ -12,6 +12,7 @@ dependencies = [
   "cryptography==46.0.7",
   "fastapi==0.116.1",
   "psycopg[binary]==3.2.10",
+  "pyyaml==6.0.3",
   "pydantic-settings==2.10.1",
   "sqlalchemy==2.0.43",
   "uvicorn[standard]==0.35.0",

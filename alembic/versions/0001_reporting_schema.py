@@ -1,21 +1,25 @@
-"""Track a report-generation marker maintained by the database.
+"""The reporting schema.
 
-Revision ID: 0004
-Revises: 0003
+Revision ID: 0001
+Revises:
 
-Pinned report snapshots must be rejected whenever report-affecting facts
-change, including a write that bypasses the application. Statement-level
-triggers advance one marker per affected tenant, so each request compares a
-single value instead of hashing every fact row.
+One revision creates the whole schema. Rainstone has not been deployed, so
+there is no installed database whose history these revisions would have to
+preserve; carrying the development cycle's steps forward would only make the
+first real installation replay work that never ran anywhere.
+
+Report-affecting writes advance a per-tenant marker through statement-level
+triggers, so a write that bypasses the application still invalidates pinned
+report snapshots.
 """
-
-from alembic import op
 
 from rainstone import models  # noqa: F401
 from rainstone.db import Base
 
-revision = "0004"
-down_revision = "0003"
+from alembic import op
+
+revision = "0001"
+down_revision = None
 branch_labels = None
 depends_on = None
 
@@ -77,9 +81,6 @@ $$ LANGUAGE plpgsql
 
 def upgrade() -> None:
     Base.metadata.create_all(bind=op.get_bind(), checkfirst=True)
-    op.execute(
-        "ALTER TABLE cost_revision ADD COLUMN IF NOT EXISTS facts_generation BIGINT DEFAULT 0"
-    )
     op.execute(FUNCTION)
     for table, source in TENANT_SOURCES.items():
         for suffix, operation, transition in OPERATIONS:
@@ -92,27 +93,11 @@ def upgrade() -> None:
                 FOR EACH STATEMENT
                 EXECUTE FUNCTION rainstone_advance_report_generation('{source}')
             """)
-        # A pre-0004 trigger name from an earlier draft, if present.
-        op.execute(f"DROP TRIGGER IF EXISTS rainstone_generation_{table} ON {table}")
-    op.execute("""
-        INSERT INTO report_generation (tenant_id, generation, updated_at)
-        SELECT id, 1, now() FROM tenant
-        ON CONFLICT (tenant_id) DO NOTHING
-    """)
-    # Existing revisions adopt the current marker: their facts are unchanged by
-    # this migration.
-    op.execute("""
-        UPDATE cost_revision r
-           SET facts_generation = g.generation
-          FROM report_generation g
-         WHERE g.tenant_id = r.tenant_id
-    """)
 
 
 def downgrade() -> None:
     for table in TENANT_SOURCES:
-        for suffix, _operation, _transition in OPERATIONS:
+        for suffix, _, _ in OPERATIONS:
             op.execute(f"DROP TRIGGER IF EXISTS rainstone_generation_{table}_{suffix} ON {table}")
     op.execute("DROP FUNCTION IF EXISTS rainstone_advance_report_generation()")
-    op.execute("ALTER TABLE cost_revision DROP COLUMN IF EXISTS facts_generation")
-    op.execute("DROP TABLE IF EXISTS report_generation")
+    Base.metadata.drop_all(bind=op.get_bind(), checkfirst=True)

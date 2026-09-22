@@ -88,7 +88,7 @@ def status(
 ) -> dict:
     """Sanitized operational diagnostics: no DSNs, secrets or raw job data.
 
-    Source and cloud findings come from the collector's and bootstrap's recorded
+    Source and cloud findings come from the collector's and installation's recorded
     reports, because this process deliberately holds none of those credentials.
     """
     if not settings.diagnostics_enabled:

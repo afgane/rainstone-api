@@ -117,11 +117,15 @@ unexhausted and is drained immediately instead of waiting a full interval.
 
 ## Price coverage
 
-The bundled catalog covers the `us-central1` shapes captured in Phase 0. The CI
-corpus uses nine N2 shapes in `us-east4`, which this release cannot price: those
-lifetimes stay visibly **unpriced** rather than borrowing another region's or a
-different shape's rate. `rainstone catalog coverage` lists what can be priced,
-and `/api/catalog` reports the same through the UI.
+The bundled catalog declares its coverage — `us-central1`, the `t2d` and `n2`
+families, on-demand — so a region it never claimed and a claimed region it could
+not price are distinguishable rather than one number. The CI corpus uses nine N2
+shapes in `us-east4`, outside that declared coverage: those lifetimes stay
+visibly **unpriced** rather than borrowing another region's or a different
+shape's rate. Regional variation is ordinary price data for the publisher to
+maintain, not an override an operator keeps. `rainstone catalog coverage` lists
+what is claimed and what can be priced, and `/api/catalog` reports the same
+through the UI.
 
 Catalog artifacts are content-addressed and immutable: a published catalog ID
 cannot be replaced with different content. A refresh validates the artifact

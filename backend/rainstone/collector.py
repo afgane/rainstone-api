@@ -19,15 +19,11 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 
-from sqlalchemy import Engine, create_engine, select, text
+from sqlalchemy import Engine, select, text
 from sqlalchemy.orm import Session
 
 from rainstone.adapters.contracts import ObservationBatch, SourceAdapter
-from rainstone.adapters.galaxy_db import (
-    GalaxyDatabaseAdapter,
-    SourceIdentityUnavailable,
-    discover_capabilities,
-)
+from rainstone.adapters.galaxy_db import GalaxyDatabaseAdapter, discover_capabilities
 from rainstone.adapters.gcp_batch import BatchCollector, BatchTarget, HttpGcpClient
 from rainstone.adapters.kubernetes import HttpKubernetesClient, KubernetesCollector
 from rainstone.baseline import BaselineProfile, classify_job
@@ -37,13 +33,14 @@ from rainstone.config import Settings, get_settings
 from rainstone.costing import calculate_tenant
 from rainstone.db import engine as application_engine
 from rainstone.doctor import record_report, run_checks
+from rainstone.enrollment import read_evidence, source_engine, verify_enrollment
 from rainstone.ingestion import (
     apply_batch,
     read_cursor,
     record_failure,
     stable_id,
 )
-from rainstone.models import ExecutionAttempt, Job, SourceBinding, Tenant
+from rainstone.models import ExecutionAttempt, Job, Tenant
 
 logger = logging.getLogger("rainstone.collector")
 
@@ -52,10 +49,6 @@ TERMINAL_STATES = {"ok", "error", "deleted", "deleting", "failed", "cancelled"}
 
 class CollectorLeaseUnavailable(RuntimeError):
     """Another collector already holds this instance's lease."""
-
-
-class SourceBindingMismatch(RuntimeError):
-    """The configured source database is not the one this identity was bound to."""
 
 
 def _lock_key(key: str) -> int:
@@ -149,44 +142,19 @@ def batch_targets(
     return list(targets.values())
 
 
-def tenant_id_for(settings: Settings) -> uuid.UUID:
-    return stable_id("tenant", settings.tenant_slug)
+def tenant_id_for(settings: Settings, session: Session | None = None) -> uuid.UUID:
+    """The active fact namespace for this instance.
 
-
-def ensure_binding(
-    session: Session,
-    settings: Settings,
-    *,
-    source_identity: str,
-    schema_fingerprint: str | None = None,
-    version: str | None = None,
-) -> None:
-    """Refuse to collect from a database this instance is not enrolled with.
-
-    Identity comes from the source database's enrolled identifier, so a reader
-    whose column grants hide columns still matches, while a replacement database
-    with an identical schema does not.
+    The slug names the namespace; its identifier is whatever enrollment
+    generated, because replacing a source retires the old namespace under a
+    suffixed slug and opens a new one. The derived identifier is only the
+    fallback for a namespace that does not exist yet, such as fixture data.
     """
-    tenant_id = tenant_id_for(settings)
-    binding = session.scalar(select(SourceBinding).where(SourceBinding.tenant_id == tenant_id))
-    if binding is None:
-        raise SourceBindingMismatch(
-            "this instance has no source binding; run `rainstone bootstrap` first"
-        )
-    if binding.source_identity != source_identity:
-        raise SourceBindingMismatch(
-            "the configured Galaxy database is not the source this instance is enrolled with "
-            f"(enrolled {binding.source_identity}, found {source_identity}); configure a new "
-            "instance identity (RAINSTONE_TENANT_SLUG) for this source and bootstrap it, so the "
-            "two databases' job histories stay separate"
-        )
-    # A schema change is a capability change, not a new source.
-    binding.schema_fingerprint = schema_fingerprint or binding.schema_fingerprint
-    binding.source_version = version or binding.source_version
-    tenant = session.get(Tenant, tenant_id)
-    if tenant is not None:
-        tenant.source_version = version or tenant.source_version
-    session.commit()
+    if session is None:
+        with Session(application_engine) as owned:
+            return tenant_id_for(settings, owned)
+    tenant = session.scalar(select(Tenant).where(Tenant.slug == settings.tenant_slug))
+    return tenant.id if tenant is not None else stable_id("tenant", settings.tenant_slug)
 
 
 class Collector:
@@ -330,10 +298,8 @@ def build_collector(settings: Settings | None = None) -> Collector:
     sources: list[ScheduledSource] = []
     profile = baseline_profile(settings)
 
-    if settings.galaxy_database_url:
-        galaxy_engine = create_engine(
-            settings.galaxy_database_url, pool_pre_ping=True, pool_size=2, max_overflow=0
-        )
+    if settings.galaxy_source_url is not None:
+        galaxy_engine = source_engine(settings)
         capabilities = discover_capabilities(
             galaxy_engine, statement_timeout=settings.galaxy_statement_timeout
         )
@@ -342,19 +308,9 @@ def build_collector(settings: Settings | None = None) -> Collector:
                 "the Galaxy source schema is not supported: missing "
                 + ", ".join(capabilities.missing[:10])
             )
-        if capabilities.source_identity is None:
-            raise SourceIdentityUnavailable(
-                capabilities.identity_status,
-                "the configured Galaxy database has no readable Rainstone source identity "
-                f"({capabilities.identity_status}); run `rainstone bootstrap` against it",
-            )
         with Session(application_engine) as session:
-            ensure_binding(
-                session,
-                settings,
-                source_identity=capabilities.source_identity,
-                schema_fingerprint=capabilities.schema_fingerprint,
-                version=capabilities.source_version,
+            verify_enrollment(
+                session, settings, capabilities, read_evidence(settings, capabilities)
             )
 
         def classify(batch: ObservationBatch) -> ObservationBatch:
@@ -383,8 +339,16 @@ def build_collector(settings: Settings | None = None) -> Collector:
                         namespace=settings.kubernetes_namespace,
                         api_server=settings.kubernetes_api_server,
                     ),
+                    # Both identities: the provider's numeric ID, and what
+                    # Kubernetes calls the same machine. A node without a
+                    # provider ID reports only the latter.
                     baseline_resource_ids=(
-                        (settings.baseline_resource_uid,) if settings.baseline_resource_uid else ()
+                        *(
+                            (settings.baseline_resource_uid,)
+                            if settings.baseline_resource_uid
+                            else ()
+                        ),
+                        *settings.baseline_node_name_list,
                     ),
                     baseline_descriptor={
                         "machine_type": settings.baseline_machine_type,
@@ -420,7 +384,7 @@ def build_collector(settings: Settings | None = None) -> Collector:
 
     if not sources:
         raise RuntimeError(
-            "no collection sources are configured; set RAINSTONE_GALAXY_DATABASE_URL "
+            "no collection sources are configured; set the Galaxy source connection "
             "and enable the execution observers this deployment uses"
         )
     return Collector(settings, sources)

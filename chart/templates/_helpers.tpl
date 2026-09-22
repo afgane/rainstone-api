@@ -31,8 +31,19 @@ app.kubernetes.io/part-of: galaxy
 {{- end -}}
 {{- end -}}
 
+{{/* The Secret holding a complete source DSN, when one is in use: a
+preexisting one, or the one the provisioning mode publishes. */}}
 {{- define "rainstone.sourceSecret" -}}
 {{- default (printf "%s-source" (include "rainstone.fullname" .)) .Values.source.dsnSecret -}}
+{{- end -}}
+
+{{/*
+The Galaxy account this deployment reports on. It is one account, so
+`auth.workspaceOwner` is the answer unless an installation deliberately enrols a
+different one.
+*/}}
+{{- define "rainstone.sharedAccount" -}}
+{{- default .Values.auth.workspaceOwner .Values.source.sharedAccount -}}
 {{- end -}}
 
 {{- define "rainstone.image" -}}
@@ -100,6 +111,8 @@ app.kubernetes.io/part-of: galaxy
   value: {{ .Values.baseline.region | quote }}
 - name: RAINSTONE_BASELINE_ZONE
   value: {{ .Values.baseline.zone | quote }}
+- name: RAINSTONE_BASELINE_NODE_NAMES
+  value: {{ .Values.baseline.nodeNames | quote }}
 - name: RAINSTONE_BASELINE_DESTINATIONS
   value: {{ .Values.baseline.destinations | quote }}
 - name: RAINSTONE_BASELINE_RUNNERS
@@ -107,17 +120,84 @@ app.kubernetes.io/part-of: galaxy
 {{- end }}
 {{- end -}}
 
-{{/* Source and observation settings the collector alone needs. */}}
-{{- define "rainstone.collectorEnv" -}}
+{{/* Whether Batch observation is on: `auto` follows the configured project. */}}
+{{- define "rainstone.batchEnabled" -}}
+{{- $batch := .Values.collector.gcpBatch -}}
+{{- $mode := toString $batch.enabled -}}
+{{- if eq $mode "auto" -}}
+{{- if and $batch.project $batch.location -}}true{{- else -}}false{{- end -}}
+{{- else if eq $mode "true" -}}true{{- else -}}false{{- end -}}
+{{- end -}}
+
+{{/*
+The Galaxy source connection, for the collector and for initialization.
+
+The default profile references Galaxy's existing credential Secret and builds
+the URL from components, so no DSN is assembled by hand and no credential is
+rendered into a manifest. A preexisting DSN Secret and the optional provisioned
+reader both arrive as one secret reference instead.
+*/}}
+{{- define "rainstone.sourceEnv" -}}
+{{- $source := .Values.source -}}
+{{- $dsnSecret := include "rainstone.sourceDsnSecret" . -}}
+{{- if $dsnSecret }}
 - name: RAINSTONE_GALAXY_DATABASE_URL
   valueFrom:
     secretKeyRef:
-      name: {{ include "rainstone.sourceSecret" . }}
-      key: {{ .Values.source.dsnSecretKey }}
+      name: {{ $dsnSecret }}
+      key: {{ $source.dsnSecretKey }}
+- name: RAINSTONE_GALAXY_SOURCE_PRIVILEGE
+  value: {{ $source.provisionReader.enabled | ternary "provisioned-reader" "application-credential" }}
+{{- else if $source.existingSecret }}
+- name: RAINSTONE_GALAXY_DB_USER
+  valueFrom:
+    secretKeyRef:
+      name: {{ $source.existingSecret }}
+      key: {{ $source.usernameKey }}
+- name: RAINSTONE_GALAXY_DB_PASSWORD
+  valueFrom:
+    secretKeyRef:
+      name: {{ $source.existingSecret }}
+      key: {{ $source.passwordKey }}
+- name: RAINSTONE_GALAXY_DB_HOST
+  value: {{ required "source.host is required with source.existingSecret" $source.host | quote }}
+- name: RAINSTONE_GALAXY_DB_PORT
+  value: {{ $source.port | quote }}
+- name: RAINSTONE_GALAXY_DB_NAME
+  value: {{ $source.database | quote }}
+{{- if $source.sslMode }}
+- name: RAINSTONE_GALAXY_DB_SSLMODE
+  value: {{ $source.sslMode | quote }}
+{{- end }}
+{{- if $source.options }}
+- name: RAINSTONE_GALAXY_DB_OPTIONS
+  value: {{ $source.options | quote }}
+{{- end }}
+# Galaxy's application credential retains Galaxy's write privileges. Read-only
+# transactions, allowlisted statements, a statement timeout and a bounded pool
+# are enforced by Rainstone, not by the database; the status report says so.
+- name: RAINSTONE_GALAXY_SOURCE_PRIVILEGE
+  value: application-credential
+{{- end }}
+- name: RAINSTONE_GALAXY_STATEMENT_TIMEOUT
+  value: {{ $source.statementTimeout | quote }}
+{{- if $source.deploymentEvidence }}
+- name: RAINSTONE_SOURCE_DEPLOYMENT_EVIDENCE
+  value: {{ $source.deploymentEvidence | quote }}
+{{- end }}
+{{- end -}}
+
+{{- define "rainstone.sourceDsnSecret" -}}
+{{- if or .Values.source.dsnSecret .Values.source.provisionReader.enabled -}}
+{{- include "rainstone.sourceSecret" . -}}
+{{- end -}}
+{{- end -}}
+
+{{/* Settings the collector alone needs, beyond the source connection. */}}
+{{- define "rainstone.collectorEnv" -}}
+{{- include "rainstone.sourceEnv" . }}
 - name: RAINSTONE_COLLECTOR_HEARTBEAT_PATH
   value: /tmp/rainstone-collector.heartbeat
-- name: RAINSTONE_GALAXY_STATEMENT_TIMEOUT
-  value: {{ .Values.source.statementTimeout | quote }}
 - name: RAINSTONE_GALAXY_BATCH_SIZE
   value: {{ .Values.source.batchSize | quote }}
 - name: RAINSTONE_GALAXY_REPLAY_OVERLAP_SECONDS
@@ -131,8 +211,8 @@ app.kubernetes.io/part-of: galaxy
 - name: RAINSTONE_KUBERNETES_NAMESPACE
   value: {{ .Values.collector.kubernetes.namespace | default .Release.Namespace | quote }}
 - name: RAINSTONE_GCP_BATCH_ENABLED
-  value: {{ .Values.collector.gcpBatch.enabled | quote }}
-{{- if .Values.collector.gcpBatch.enabled }}
+  value: {{ include "rainstone.batchEnabled" . | quote }}
+{{- if eq (include "rainstone.batchEnabled" .) "true" }}
 - name: RAINSTONE_GCP_PROJECT
   value: {{ required "collector.gcpBatch.project is required" .Values.collector.gcpBatch.project | quote }}
 - name: RAINSTONE_GCP_LOCATION

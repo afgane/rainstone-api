@@ -52,8 +52,10 @@ doctor:
 catalog:
 	$(COMPOSE) run --rm backend rainstone catalog coverage
 
+CHART_VALUES := --set instance.slug=local --set auth.workspaceOwner=local-account \
+	--set database.storageClass=standard --set source.existingSecret=galaxy-db \
+	--set source.host=galaxy-postgres-rw --set source.sharedAccount=local-account
+
 chart-lint:
-	helm lint chart --set instance.slug=local --set auth.workspaceOwner=local-account \
-		--set collector.gcpBatch.enabled=false
-	helm template rainstone chart --set instance.slug=local \
-		--set auth.workspaceOwner=local-account --set collector.gcpBatch.enabled=false >/dev/null
+	helm lint chart $(CHART_VALUES)
+	helm template rainstone chart $(CHART_VALUES) >/dev/null

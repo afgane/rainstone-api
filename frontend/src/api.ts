@@ -215,16 +215,41 @@ function offsetBoundary(value: string, timezone: string): string {
   return new Date(instant).toISOString();
 }
 
+export class ApiError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.status = status;
+  }
+}
+
 export async function get<T>(path: string, signal?: AbortSignal): Promise<T> {
   const response = await fetch(apiPath(path), { headers: identityHeaders, signal });
   if (!response.ok) {
     const body = await response.json().catch(() => ({ detail: response.statusText }));
-    throw new Error(body.detail || `${response.status} ${response.statusText}`);
+    throw new ApiError(body.detail || `${response.status} ${response.statusText}`, response.status);
   }
   return response.json() as Promise<T>;
 }
 
 export async function loadReport(state: ReportState, signal?: AbortSignal) {
+  try {
+    return await loadPinnedReport(state, signal);
+  } catch (reason) {
+    // The snapshot this load pinned was superseded while the load was still
+    // running, which an unattended collector does routinely. Every part of one
+    // view must come from one revision, so the load is repeated against the
+    // new one rather than shown as an error or mixed with the old one.
+    if (reason instanceof ApiError && reason.status === 409) {
+      return await loadPinnedReport(state, signal);
+    }
+    throw reason;
+  }
+}
+
+/** One view, assembled from a single calculation revision. */
+async function loadPinnedReport(state: ReportState, signal?: AbortSignal) {
   const initialQuery = queryString(state);
   const summary = await get<Summary>(`/summary?${initialQuery}`, signal);
   const snapshotState = { ...state, revision: summary.revision_id || state.revision };

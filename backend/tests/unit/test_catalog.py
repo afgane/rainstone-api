@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 from rainstone.catalog import CatalogError, validate
 
-BUNDLED = Path("catalog/gcp-us-central1-2026-09-19.json")
+BUNDLED = Path("catalog/gcp-2026-09-19.json")
 
 
 def artifact(**overrides) -> bytes:

@@ -160,14 +160,14 @@ def test_the_readiness_endpoint_gates_traffic_but_health_does_not(workspace_clie
 
 
 def test_history_from_installation_does_not_decide_current_health(recorded) -> None:
-    """A one-time bootstrap finding must not outlive its recovery."""
+    """A one-time installation finding must not outlive its recovery."""
     with Session(engine) as session:
         record_report(
             session,
             TENANT_ID,
             {
                 "generated_at": (datetime.now(UTC) - timedelta(days=3)).isoformat(),
-                "context": "bootstrap",
+                "context": "installation",
                 "overall_status": "fail",
                 "auth_mode": "anvil-workspace",
                 "tenant": "anvil-demo",
@@ -179,9 +179,9 @@ def test_history_from_installation_does_not_decide_current_health(recorded) -> N
                         "facts": {},
                     },
                     {
-                        "name": "source_identity",
+                        "name": "source_evidence",
                         "status": "pass",
-                        "detail": "Source identity: the enrolled source identity is readable.",
+                        "detail": "Source evidence: the fingerprint is readable.",
                         "facts": {},
                     },
                 ],
@@ -196,8 +196,8 @@ def test_history_from_installation_does_not_decide_current_health(recorded) -> N
     # A current check supersedes the installation-time finding for the same
     # capability, and history never raises the overall status.
     assert "collector:gcp:batch.jobs.list" in names
-    assert "bootstrap:gcp:batch.jobs.list" not in names
-    assert "bootstrap:source_identity" in names
+    assert "installation:gcp:batch.jobs.list" not in names
+    assert "installation:source_evidence" in names
     # The installation-time failure no longer decides current health.
     assert report["overall_status"] != "fail"
     assert not [
@@ -206,12 +206,12 @@ def test_history_from_installation_does_not_decide_current_health(recorded) -> N
         if check["status"] == "fail" and not check.get("history")
     ]
     history = next(
-        check for check in report["checks"] if check["name"] == "bootstrap:source_identity"
+        check for check in report["checks"] if check["name"] == "installation:source_evidence"
     )
     assert history["history"] is True
     assert "during installation" in history["detail"]
     kinds = {source["context"]: source["kind"] for source in report["recorded_reports"]}
-    assert kinds == {"collector": "current", "bootstrap": "history"}
+    assert kinds == {"collector": "current", "installation": "history"}
 
 
 def test_readiness_waits_for_this_release_initialization() -> None:

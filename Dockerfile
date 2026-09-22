@@ -20,7 +20,7 @@ RUN pip install --no-cache-dir -r requirements.lock
 COPY backend/ backend/
 RUN pip install --no-cache-dir --no-deps .
 COPY alembic/ alembic/
-COPY alembic.ini fixtures/phase1.json catalog/gcp-us-central1-2026-09-19.json ./
+COPY alembic.ini fixtures/phase1.json catalog/gcp-2026-09-19.json ./
 
 FROM backend-base AS backend-dev
 COPY fixtures/ fixtures/

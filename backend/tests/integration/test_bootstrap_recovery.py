@@ -1,9 +1,12 @@
-"""Initialization must recover from an interruption between its two writes.
+"""The optional reader provisioning must recover from an interruption.
 
 Provisioning the reader role commits to the source database, while publishing
 the credential writes to Kubernetes. A failure between them must leave a state
 the next ordinary run repairs, because the collector cannot work without a
 credential it can read.
+
+This is the non-default mode. The default profile reads Galaxy with a
+credential that already exists and provisions nothing.
 """
 
 import uuid
@@ -85,7 +88,6 @@ def run(settings: Settings) -> dict:
     return bootstrap(
         settings,
         admin_database_url=admin_dsn(),
-        shared_account="researcher",
         reader_role=ROLE,
         secret_target="rainstone-source/dsn",
     )
