@@ -170,18 +170,31 @@ services:
       PREFIX_URL: http://prefix/rainstone/
     volumes:
       - ./frontend:/work
+      # Shadows the bind-mounted node_modules, same as the frontend dev
+      # service: a fresh CI checkout has none, and installing the container's
+      # own Linux build into the host's bind-mounted directory would corrupt
+      # local dev's native binaries (esbuild, Playwright browsers, ...).
+      - e2e-node-modules:/work/node_modules
     depends_on:
       release:
         condition: service_healthy
       prefix:
-        condition: service_started
-    command: ["npm", "run", "e2e"]
+        condition: service_healthy
+    command: ["sh", "-c", "npm ci && npm run e2e"]
 
   prefix:
     profiles: ["e2e"]
     image: nginx:1.29.1-alpine
     volumes:
       - ./frontend/e2e/nginx.conf:/etc/nginx/nginx.conf:ro
+    healthcheck:
+      # Proxies through to release, not just nginx's own liveness: nginx
+      # resolves an upstream hostname once at startup, so "nginx is up" and
+      # "nginx can actually reach release" are different facts.
+      test: ["CMD", "curl", "-sf", "http://localhost/rainstone/"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
     depends_on:
       release:
         condition: service_healthy
@@ -189,3 +202,4 @@ services:
 volumes:
   rainstone-postgres:
   frontend-node-modules:
+  e2e-node-modules:
