@@ -70,10 +70,23 @@ test("advanced filters stay visible and removable while collapsed", async ({ pag
 
   await disclosure.click();
   await expect(disclosure).toHaveAttribute("aria-expanded", "false");
-  const chip = page.getByRole("button", { name: /Cost coverage: known_zero/ });
+  const chip = page.getByRole("button", { name: /Cost coverage.*known_zero/ });
   await expect(chip).toBeVisible();
   await chip.click();
   await expect(page).not.toHaveURL(/quality=known_zero/);
+});
+
+test("a long filter value stays inside the sidebar", async ({ page }) => {
+  const toolId = "toolshed.g2.bx.psu.edu/repos/iuc/goseq/goseq/2.0.1";
+  await page.goto(`${BASE}?view=tool-runs&${FIXTURE_PERIOD}&tool_id=${toolId}`);
+  const chip = page.getByRole("button", { name: /Tool ID/ });
+  await expect(chip).toBeVisible();
+
+  const sidebar = await page.locator(".sidebar").boundingBox();
+  const box = await chip.boundingBox();
+  expect(box!.x + box!.width).toBeLessThanOrEqual(sidebar!.x + sidebar!.width + 1);
+  // The whole value stays available even though the label is truncated.
+  await expect(chip).toHaveAttribute("title", new RegExp(toolId.replace(/[.]/g, "\\.")));
 });
 
 test("status is operational and carries no report controls", async ({ page }) => {

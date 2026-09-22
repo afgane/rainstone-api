@@ -34,8 +34,11 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .custom-dates span { display: block; font-size: .78rem; font-weight: 700; }
 .disclosure { display: flex; align-items: center; gap: .4rem; border: 1px solid #b7c6d3; border-radius: .45rem; padding: .45rem .65rem; color: #25537b; background: white; }
 .count { display: inline-grid; place-items: center; min-width: 1.35rem; height: 1.35rem; border-radius: 999px; color: white; background: #25537b; font-size: .75rem; }
-.chips { display: flex; flex-wrap: wrap; gap: .3rem; margin: 0; padding: 0; list-style: none; }
-.chips button { display: flex; align-items: center; gap: .3rem; border: 1px solid #b15f00; border-radius: 999px; padding: .2rem .5rem; font-size: .78rem; color: #7a4300; background: #fff6e8; }
+.chips { display: flex; flex-wrap: wrap; gap: .3rem; margin: 0; padding: 0; list-style: none; max-width: 100%; }
+.chips li { min-width: 0; max-width: 100%; }
+.chips button { display: flex; align-items: center; gap: .3rem; max-width: 100%; border: 1px solid #b15f00; border-radius: 999px; padding: .2rem .5rem; font-size: .78rem; color: #7a4300; background: #fff6e8; }
+.chips button svg { flex: 0 0 auto; }
+.chip-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .advanced { display: grid; gap: .5rem; padding: .6rem; border: 1px solid #e3e9ee; border-radius: .5rem; background: rgba(255,255,255,.75); }
 .advanced span { display: block; font-size: .78rem; font-weight: 700; margin-bottom: .2rem; }
 .drawer-toggle { display: none; }

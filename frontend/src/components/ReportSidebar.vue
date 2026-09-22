@@ -96,10 +96,17 @@ const showControls = computed(() => props.state.view !== "status");
              so a hidden selection can never change an easy answer silently. -->
         <ul v-if="chips.length" class="chips">
           <li v-for="chip in chips" :key="chip.key">
-            <button @click="emit('clear-filter', chip.key)">
-              {{ FILTER_LABELS[chip.key] }}: {{ chip.value }}
+            <!-- A filter value can be a full Tool Shed identifier, so the label
+                 truncates inside the sidebar and keeps the whole value in its
+                 tooltip and accessible name. -->
+            <button
+              :title="`${FILTER_LABELS[chip.key]}: ${chip.value}`"
+              @click="emit('clear-filter', chip.key)"
+            >
+              <span class="chip-label">{{ FILTER_LABELS[chip.key] }}: {{ chip.value }}</span>
               <X :size="14" aria-hidden="true" />
-              <span class="sr-only">Remove this filter</span>
+              <span class="sr-only">Remove the {{ FILTER_LABELS[chip.key] }} filter,
+                currently {{ chip.value }}</span>
             </button>
           </li>
         </ul>
