@@ -1,9 +1,13 @@
+import { exclusiveEnd, resolvePeriod, type Period, type PeriodId } from "./periods";
+
 export type Basis = "additional" | "allocated";
+/** Views are named for the questions they answer, not for their endpoints. */
 export type View =
-  | "overview" | "jobs" | "tools" | "invocations" | "daily" | "users" | "infrastructure" | "status";
+  | "overview" | "runs" | "tool-runs" | "tools" | "daily" | "users" | "server" | "status";
 
 export interface ReportState {
   view: View;
+  period: PeriodId;
   basis: Basis;
   mode: "accrued" | "completed";
   fromTime: string;
@@ -31,6 +35,7 @@ export interface ReportState {
 export interface Meta {
   basis: Basis;
   currency: "USD";
+  calculation_version: string | null;
   revision_id: string | null;
   as_of: string | null;
   priced_subtotal: string | null;
@@ -49,24 +54,35 @@ export interface Summary extends Meta {
   baseline_infrastructure_amount: string | null;
   can_view_infrastructure: boolean;
   demo: boolean;
+  demo_period: { from: string; to: string } | null;
 }
 
 export interface Job {
-  id: string; source_id: string; tool_id: string; tool_version: string | null;
+  id: string; source_id: string; tool_id: string; tool_name: string;
+  tool_version: string | null;
   owner: string; owner_id: string; state: string; runner: string | null;
   destination: string | null; created_at: string; amount: string | null; currency: string;
   quality: string; reason: string; cost_lines: number; attempt_count: number;
+  capacities: string[]; temporally_unattributed: boolean;
 }
 
 export interface Invocation {
   id: string; source_id: string; workflow_id: string; workflow_name: string;
   workflow_version: string | null; parent_id: string | null; state: string;
-  job_count: number; amount: string | null; currency: string;
-  unpriced_job_count: number; reused_job_count: number;
+  run_status: string; started_at: string;
+  job_count: number; run_job_count: number;
+  /** Cost accrued inside the selected period. */
+  amount: string | null;
+  /** The whole run, whatever period is selected. */
+  run_total: string | null;
+  run_total_complete: boolean;
+  currency: string;
+  unpriced_job_count: number; run_unpriced_job_count: number; reused_job_count: number;
+  timing_unavailable: boolean;
 }
 
 export interface GroupItem {
-  tool_id?: string; tool_version?: string; owner_id?: string; label?: string;
+  tool_id?: string; tool_name?: string; tool_version?: string; owner_id?: string; label?: string;
   job_count: number; amount: string | null; priced_count: number; incomplete_count: number;
   statistics?: { sample_count: number; excluded_count: number; mean: string | null; median: string | null; p95: string | null };
 }
@@ -121,10 +137,47 @@ function apiPath(path: string): string {
   return `${base.replace(/\/$/, "")}/api${path}`;
 }
 
-export function queryString(state: ReportState): string {
+/** Filters a scientist never has to touch to get an answer. */
+export const ADVANCED_FILTERS = [
+  "state", "runner", "destination", "capacity", "quality", "toolId", "toolVersion",
+  "workflowId", "invocationId", "minCost", "maxCost", "owner",
+] as const;
+
+export type AdvancedFilter = (typeof ADVANCED_FILTERS)[number];
+
+export const FILTER_LABELS: Record<AdvancedFilter, string> = {
+  state: "Status",
+  runner: "Where it ran",
+  destination: "Destination",
+  capacity: "Capacity",
+  quality: "Cost coverage",
+  toolId: "Tool ID",
+  toolVersion: "Tool version",
+  workflowId: "Workflow ID",
+  invocationId: "Run ID",
+  minCost: "Minimum cost",
+  maxCost: "Maximum cost",
+  owner: "Galaxy account",
+};
+
+export function activeFilters(state: ReportState): Array<{ key: AdvancedFilter; value: string }> {
+  return ADVANCED_FILTERS
+    .map(key => ({ key, value: String(state[key] ?? "") }))
+    .filter(entry => entry.value !== "");
+}
+
+export function periodOf(state: ReportState, now = new Date()): Period {
+  return resolvePeriod(state.period, state.timezone, {
+    fromDate: state.fromTime, toDate: state.toTime,
+  }, now);
+}
+
+export function queryString(state: ReportState, now = new Date()): string {
   const query = new URLSearchParams({ basis: state.basis, mode: state.mode, timezone: state.timezone });
-  if (state.fromTime) query.set("from", offsetBoundary(state.fromTime, state.timezone));
-  if (state.toTime) query.set("to", offsetBoundary(state.toTime, state.timezone));
+  const period = periodOf(state, now);
+  query.set("from", offsetBoundary(period.fromDate, state.timezone));
+  // Users choose an inclusive last day; the API boundary is exclusive.
+  query.set("to", offsetBoundary(exclusiveEnd(period), state.timezone));
   const filters = {
     search: state.search, owner: state.owner, tool_id: state.toolId,
     tool_version: state.toolVersion, invocation_id: state.invocationId,
@@ -188,10 +241,10 @@ export async function loadReport(state: ReportState, signal?: AbortSignal) {
         get<{ items: Invocation[]; meta: Meta }>(`/invocations?${query}`, signal),
       ])
     : state.view === "tools" ? get<{ items: GroupItem[]; meta: Meta }>(`/tools?${query}`, signal)
-    : state.view === "invocations" ? get<{ items: Invocation[]; meta: Meta }>(`/invocations?${query}`, signal)
+    : state.view === "runs" ? get<{ items: Invocation[]; meta: Meta }>(`/invocations?${query}`, signal)
     : state.view === "daily" ? get<{ items: DailyItem[]; meta: Meta }>(`/daily?${query}`, signal)
     : state.view === "users" ? get<{ items: GroupItem[]; meta: Meta }>(`/users?${query}`, signal)
-    : state.view === "infrastructure" ? get<{ items: Array<Record<string, string>>; amount: string | null; scope: string; allocation_reason: string }>(`/infrastructure?${query}`, signal)
+    : state.view === "server" ? get<{ items: Array<Record<string, string>>; amount: string | null; scope: string; allocation_reason: string; observation_window: Record<string, string> }>(`/infrastructure?${query}`, signal)
     : state.view === "status" ? get<Status>("/status", signal)
     : Promise.resolve(null);
   const [jobs, freshness, me, view] = await Promise.all([...common, viewRequest]);

@@ -49,12 +49,14 @@ class SummaryResponse(ReportMeta):
     baseline_infrastructure_amount: str | None
     can_view_infrastructure: bool
     demo: bool
+    demo_period: dict[str, str] | None = None
 
 
 class JobItem(APIModel):
     id: str
     source_id: str
     tool_id: str
+    tool_name: str
     tool_version: str | None
     owner: str
     owner_id: str
@@ -106,6 +108,7 @@ class ToolStatistics(APIModel):
 
 class ToolItem(APIModel):
     tool_id: str
+    tool_name: str
     tool_version: str | None
     job_count: int
     amount: str | None
@@ -128,11 +131,18 @@ class InvocationItem(APIModel):
     workflow_version: str | None
     parent_id: str | None
     state: str
+    run_status: str
+    started_at: datetime
     job_count: int
+    run_job_count: int
     amount: str | None
+    run_total: str | None
+    run_total_complete: bool
     currency: Literal["USD"]
     unpriced_job_count: int
+    run_unpriced_job_count: int
     reused_job_count: int
+    timing_unavailable: bool
 
 
 class InvocationListResponse(APIModel):

@@ -111,6 +111,11 @@ API effective timestamps, so calculations are marked approximate. Shapes and
 regions outside the catalog, including the observed `us-east4` N2 shapes, stay
 visibly unpriced. Disks, network, discounts, credits, and taxes are excluded.
 
+The dashboard leads with the period, the amount and its coverage; periods are
+calendar periods, workflow runs report their whole cost beside the selected
+period's share, and accounting vocabulary is translated at the presentation
+layer. See [`docs/dashboard.md`](docs/dashboard.md).
+
 The adopted design-system revisions are recorded in
 [`docs/design-reference.md`](docs/design-reference.md).
 The shared filter and accounting contract is documented in

@@ -34,6 +34,24 @@ from rainstone.report_query import ReportQuery
 
 ZERO = Decimal("0")
 SORT_FIELDS = {"created_at", "source_id", "tool_id", "state", "runner", "owner", "amount"}
+RUNNING_STATES = {"new", "queued", "running", "paused", "resubmitted"}
+
+
+def tool_display_name(tool_id: str) -> str:
+    """A readable name derived from the full tool identity.
+
+    Galaxy's database records the tool ID, not its display name, so this is an
+    honest fallback rather than the tool's own label. The full identity is
+    always carried alongside it, because two different tools can share a short
+    name.
+    """
+    if "/" not in tool_id:
+        return tool_id.replace("_", " ")
+    parts = [part for part in tool_id.split("/") if part]
+    # Tool Shed IDs end with `<repo>/<tool>/<version>`; the tool segment reads
+    # best, and a repeated segment adds nothing.
+    name = parts[-2] if len(parts) >= 2 else parts[-1]
+    return name.replace("_", " ")
 
 
 def _revision(session: Session, identity: Identity, requested: str | None) -> CostRevision | None:
@@ -301,6 +319,7 @@ def _base_records(
             continue
         records.append({
             "id": str(job.id), "source_id": job.source_id, "tool_id": job.tool_id,
+            "tool_name": tool_display_name(job.tool_id),
             "tool_version": job.tool_version, "owner": owner.label, "owner_id": owner.source_id,
             "state": job.state, "runner": job.runner, "destination": job.destination,
             "created_at": job.created_at, "updated_at": job.updated_at, "amount": amount,
@@ -371,6 +390,19 @@ def summary(session: Session, identity: Identity, query: ReportQuery) -> dict:
     failed = sum((r["amount"] or ZERO for r in records if r["state"] in {"error", "failed"}), ZERO)
     retried = sum((r["amount"] or ZERO for r in records if r["attempt_count"] > 1), ZERO)
     tenant = session.get(Tenant, identity.tenant_id)
+    demo = bool((tenant.capabilities or {}).get("demo", True))
+    demo_period = None
+    if demo:
+        # Fixture data has a fixed date range; saying when it is beats leaving a
+        # first-time user with an empty period and no explanation.
+        window = session.execute(
+            select(
+                func.min(ResourceLifetime.observed_start),
+                func.max(ResourceLifetime.observed_end),
+            ).where(ResourceLifetime.tenant_id == identity.tenant_id)
+        ).first()
+        if window and window[0] and window[1]:
+            demo_period = {"from": window[0].isoformat(), "to": window[1].isoformat()}
     infra = infrastructure(
         session, identity, query, revision=revision, snapshot_validated=True
     ) if identity.can_view_infrastructure else None
@@ -382,7 +414,8 @@ def summary(session: Session, identity: Identity, query: ReportQuery) -> dict:
         "failed_spend": str(failed), "retried_spend": str(retried),
         "baseline_infrastructure_amount": infra["amount"] if infra else None,
         "can_view_infrastructure": identity.can_view_infrastructure,
-        "demo": bool((tenant.capabilities or {}).get("demo", True)),
+        "demo": demo,
+        "demo_period": demo_period,
     }
 
 
@@ -510,7 +543,8 @@ def tools(session: Session, identity: Identity, query: ReportQuery) -> dict:
         else:
             p95 = None
         items.append({
-            "tool_id": tool_id, "tool_version": version, "job_count": len(rows),
+            "tool_id": tool_id, "tool_name": tool_display_name(tool_id),
+            "tool_version": version, "job_count": len(rows),
             "amount": str(sum(known, ZERO)) if known else None, "priced_count": len(known),
             "incomplete_count": sum(r["quality"] in {"partial", "unpriced", "in_progress"} for r in rows),
             "statistics": {
@@ -534,9 +568,41 @@ def tools(session: Session, identity: Identity, query: ReportQuery) -> dict:
     }
 
 
+def _run_status(invocation_state: str, rows: list[dict]) -> str:
+    """A run's status, derived from its executions rather than its scheduling.
+
+    A scheduled invocation has only finished *scheduling*; its tool executions
+    may still be running or may have failed.
+    """
+    states = {row["state"] for row in rows}
+    if invocation_state in {"cancelled", "cancelling"}:
+        return "cancelled"
+    if states & {"error", "failed"}:
+        return "failed"
+    if invocation_state == "failed":
+        return "failed"
+    if states & RUNNING_STATES or invocation_state not in {"scheduled", "completed", "ok"}:
+        return "running"
+    if not rows:
+        return "no runs recorded"
+    return "completed"
+
+
 def invocations(session: Session, identity: Identity, query: ReportQuery, roots_only: bool = True) -> dict:
+    """Workflow runs, with a full-run total beside the selected period's cost.
+
+    "What did this run cost?" and "what did I spend last week?" are different
+    questions: the run total covers the whole run, while the period amount is
+    the part accrued inside the selected interval.
+    """
     records, revision = _base_records(session, identity, query)
     by_id = {uuid.UUID(r["id"]): r for r in records}
+    full_query = query.model_copy(update={"from_time": None, "to_time": None})
+    dated = bool(query.from_time or query.to_time)
+    full_records = (
+        _base_records(session, identity, full_query)[0] if dated else records
+    )
+    full_by_id = {uuid.UUID(r["id"]): r for r in full_records}
     permitted = _authorized_invocations(session, identity)
     _, selected_ids = _workflow_job_ids(session, identity, query)
     constrained = bool(query.invocation_id or query.workflow_id)
@@ -552,21 +618,48 @@ def invocations(session: Session, identity: Identity, query: ReportQuery, roots_
             .where(InvocationJob.invocation_id == inv.id, Job.owner_id == inv.owner_id)
         ))
         rows = [by_id[job_id] for job_id in job_ids if job_id in by_id]
+        full_rows = [full_by_id[job_id] for job_id in job_ids if job_id in full_by_id]
         search_hit = (query.search or "").casefold() in (
             f"{inv.source_id} {inv.workflow_name} {inv.workflow_version or ''}".casefold()
         )
         if query.search and not search_hit and not rows:
             continue
+        started_at = min(
+            (row["created_at"] for row in full_rows), default=inv.created_at
+        )
+        # The period scopes which runs are listed: a run appears when it
+        # accrued cost inside it, or when the run itself started inside it.
+        if dated and not rows:
+            within = (not query.from_time or started_at >= query.from_time) and (
+                not query.to_time or started_at < query.to_time
+            )
+            if not within:
+                continue
         known = [r["amount"] for r in rows if r["amount"] is not None]
+        full_known = [r["full_amount"] for r in full_rows if r["full_amount"] is not None]
+        incomplete = sum(
+            r["quality"] in {"partial", "unpriced", "in_progress"} for r in full_rows
+        )
         items.append({
             "id": str(inv.id), "source_id": inv.source_id,
             "workflow_id": inv.workflow_id or inv.source_id,
             "workflow_name": inv.workflow_name, "workflow_version": inv.workflow_version,
             "parent_id": str(inv.parent_id) if inv.parent_id else None, "state": inv.state,
-            "job_count": len(rows), "amount": str(sum(known, ZERO)) if known else None,
+            "run_status": _run_status(inv.state, full_rows),
+            "started_at": started_at,
+            "job_count": len(rows),
+            "run_job_count": len(full_rows),
+            # The period's share of this run, and the run as a whole.
+            "amount": str(sum(known, ZERO)) if known else None,
+            "run_total": str(sum(full_known, ZERO)) if full_known else None,
+            "run_total_complete": incomplete == 0 and bool(full_rows),
             "currency": "USD",
             "unpriced_job_count": sum(r["quality"] in {"partial", "unpriced", "in_progress"} for r in rows),
-            "reused_job_count": sum(bool(r["job"].copied_from_source_id) for r in rows),
+            "run_unpriced_job_count": incomplete,
+            "reused_job_count": sum(bool(r["job"].copied_from_source_id) for r in full_rows),
+            "timing_unavailable": bool(full_rows) and all(
+                row["temporally_unattributed"] for row in full_rows
+            ),
         })
     return {
         "items": items[query.offset:query.offset + query.limit], "total": len(items),
