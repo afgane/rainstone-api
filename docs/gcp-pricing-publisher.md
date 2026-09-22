@@ -85,8 +85,14 @@ regression check against a prior artifact.
    Pick a `key_id` for it (e.g. `release-2026`). The public key and `key_id`
    are bundled with Rainstone (`RAINSTONE_CATALOG_TRUSTED_KEYS`,
    `backend/rainstone/config.py`) so installations need not configure either.
-   Ship the first verified snapshot's public key in the next application
-   release.
+
+   **Status (2026-09-22):** done. The live key is `release-202609`, feed
+   `https://afgane.github.io/rainstone-api/gcp/latest.json`, both bundled as
+   `backend/rainstone/config.py` defaults. Rotating the key later means
+   publishing with the new key while the old one is still listed in
+   `RAINSTONE_CATALOG_TRUSTED_KEYS` (comma-separated), then dropping the old
+   one from the bundled default once installations have picked up a build
+   signed with the new key.
 3. In the repository's GitHub settings:
    - An environment named `gcp-pricing-publisher`, holding secrets
      `GCP_CATALOG_API_KEY` and `GCP_CATALOG_SIGNING_KEY`, and variables

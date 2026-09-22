@@ -91,11 +91,15 @@ class Settings(BaseSettings):
     collector_lease_key: str = "rainstone-collector"
 
     # Price catalog. Trusted keys are `key_id:base64-ed25519-public-key` pairs;
-    # listing several at once is how key rotation works.
+    # listing several at once is how key rotation works. The feed URL and key
+    # below are Rainstone's own bundled defaults (scripts/publish_gcp_catalog.py,
+    # published from github.com/afgane/rainstone-api), so an installation need
+    # not configure either; `chart/values.yaml`'s catalog.feedUrl/trustedKeys
+    # only need setting to override them, e.g. for a fork's own feed.
     catalog_path: Path = Path("catalog/gcp-2026-09-19.json")
-    catalog_feed_url: str | None = None
+    catalog_feed_url: str | None = "https://afgane.github.io/rainstone-api/gcp/latest.json"
     catalog_refresh_seconds: int = 21600
-    catalog_trusted_keys: str = ""
+    catalog_trusted_keys: str = "release-202609:emw6TcnKRKPWuXSUIL4DRUtr9dSFcWwJsXW+Kwy4BsA="
     catalog_require_signature: bool = False
 
     # Identifies this release's initialization run; readiness waits for it.
