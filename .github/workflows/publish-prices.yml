@@ -25,6 +25,13 @@ jobs:
     environment: gcp-pricing-publisher
     permissions:
       contents: write
+    # rainstone/db.py builds its engine from get_settings() at import time, so
+    # importing rainstone.catalog (for canonical_content/validate, which never
+    # touch the database) still requires Settings() to validate. The engine is
+    # only constructed here, never connected to.
+    env:
+      RAINSTONE_AUTH_MODE: development
+      RAINSTONE_DEMO_DATA: "true"
     outputs:
       catalog_id: ${{ steps.publish.outputs.catalog_id }}
     steps:
