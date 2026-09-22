@@ -23,7 +23,7 @@ test: test-unit test-integration
 test-unit:
 	$(COMPOSE) build backend
 	$(COMPOSE) run --rm --no-deps backend pytest backend/tests/unit
-	$(COMPOSE) run --rm --no-deps backend ruff check backend
+	$(COMPOSE) run --rm --no-deps backend ruff check backend scripts
 
 test-integration:
 	$(COMPOSE) --profile test up --build --abort-on-container-exit --exit-code-from integration-tests integration-tests

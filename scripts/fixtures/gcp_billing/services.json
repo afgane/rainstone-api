@@ -1,0 +1,15 @@
+{
+  "services": [
+    {
+      "name": "services/0001-AAAA-BBBB",
+      "serviceId": "0001-AAAA-BBBB",
+      "displayName": "Cloud Storage"
+    },
+    {
+      "name": "services/6F81-5844-456A",
+      "serviceId": "6F81-5844-456A",
+      "displayName": "Compute Engine"
+    }
+  ],
+  "nextPageToken": ""
+}

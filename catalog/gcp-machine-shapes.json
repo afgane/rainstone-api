@@ -1,0 +1,303 @@
+{
+  "schema_version": 1,
+  "description": "Supported GCP predefined machine shapes this publisher prices. Pricing coverage, not a promise a shape can be launched in every zone. Reverify against the official machine specifications when adding shapes.",
+  "source": "https://docs.cloud.google.com/compute/docs/general-purpose-machines",
+  "shapes": [
+    {
+      "machine_type": "t2d-standard-1",
+      "family": "t2d",
+      "variant": "standard",
+      "vcpu": 1,
+      "memory_gib": "4",
+      "source_ref": "https://docs.cloud.google.com/compute/docs/general-purpose-machines"
+    },
+    {
+      "machine_type": "t2d-standard-2",
+      "family": "t2d",
+      "variant": "standard",
+      "vcpu": 2,
+      "memory_gib": "8",
+      "source_ref": "https://docs.cloud.google.com/compute/docs/general-purpose-machines"
+    },
+    {
+      "machine_type": "t2d-standard-4",
+      "family": "t2d",
+      "variant": "standard",
+      "vcpu": 4,
+      "memory_gib": "16",
+      "source_ref": "https://docs.cloud.google.com/compute/docs/general-purpose-machines"
+    },
+    {
+      "machine_type": "t2d-standard-8",
+      "family": "t2d",
+      "variant": "standard",
+      "vcpu": 8,
+      "memory_gib": "32",
+      "source_ref": "https://docs.cloud.google.com/compute/docs/general-purpose-machines"
+    },
+    {
+      "machine_type": "t2d-standard-16",
+      "family": "t2d",
+      "variant": "standard",
+      "vcpu": 16,
+      "memory_gib": "64",
+      "source_ref": "https://docs.cloud.google.com/compute/docs/general-purpose-machines"
+    },
+    {
+      "machine_type": "t2d-standard-32",
+      "family": "t2d",
+      "variant": "standard",
+      "vcpu": 32,
+      "memory_gib": "128",
+      "source_ref": "https://docs.cloud.google.com/compute/docs/general-purpose-machines"
+    },
+    {
+      "machine_type": "t2d-standard-48",
+      "family": "t2d",
+      "variant": "standard",
+      "vcpu": 48,
+      "memory_gib": "192",
+      "source_ref": "https://docs.cloud.google.com/compute/docs/general-purpose-machines"
+    },
+    {
+      "machine_type": "t2d-standard-60",
+      "family": "t2d",
+      "variant": "standard",
+      "vcpu": 60,
+      "memory_gib": "240",
+      "source_ref": "https://docs.cloud.google.com/compute/docs/general-purpose-machines"
+    },
+    {
+      "machine_type": "n2-standard-2",
+      "family": "n2",
+      "variant": "standard",
+      "vcpu": 2,
+      "memory_gib": "8",
+      "source_ref": "https://docs.cloud.google.com/compute/docs/general-purpose-machines"
+    },
+    {
+      "machine_type": "n2-standard-4",
+      "family": "n2",
+      "variant": "standard",
+      "vcpu": 4,
+      "memory_gib": "16",
+      "source_ref": "https://docs.cloud.google.com/compute/docs/general-purpose-machines"
+    },
+    {
+      "machine_type": "n2-standard-8",
+      "family": "n2",
+      "variant": "standard",
+      "vcpu": 8,
+      "memory_gib": "32",
+      "source_ref": "https://docs.cloud.google.com/compute/docs/general-purpose-machines"
+    },
+    {
+      "machine_type": "n2-standard-16",
+      "family": "n2",
+      "variant": "standard",
+      "vcpu": 16,
+      "memory_gib": "64",
+      "source_ref": "https://docs.cloud.google.com/compute/docs/general-purpose-machines"
+    },
+    {
+      "machine_type": "n2-standard-32",
+      "family": "n2",
+      "variant": "standard",
+      "vcpu": 32,
+      "memory_gib": "128",
+      "source_ref": "https://docs.cloud.google.com/compute/docs/general-purpose-machines"
+    },
+    {
+      "machine_type": "n2-standard-48",
+      "family": "n2",
+      "variant": "standard",
+      "vcpu": 48,
+      "memory_gib": "192",
+      "source_ref": "https://docs.cloud.google.com/compute/docs/general-purpose-machines"
+    },
+    {
+      "machine_type": "n2-standard-64",
+      "family": "n2",
+      "variant": "standard",
+      "vcpu": 64,
+      "memory_gib": "256",
+      "source_ref": "https://docs.cloud.google.com/compute/docs/general-purpose-machines"
+    },
+    {
+      "machine_type": "n2-standard-80",
+      "family": "n2",
+      "variant": "standard",
+      "vcpu": 80,
+      "memory_gib": "320",
+      "source_ref": "https://docs.cloud.google.com/compute/docs/general-purpose-machines"
+    },
+    {
+      "machine_type": "n2-standard-96",
+      "family": "n2",
+      "variant": "standard",
+      "vcpu": 96,
+      "memory_gib": "384",
+      "source_ref": "https://docs.cloud.google.com/compute/docs/general-purpose-machines"
+    },
+    {
+      "machine_type": "n2-standard-128",
+      "family": "n2",
+      "variant": "standard",
+      "vcpu": 128,
+      "memory_gib": "512",
+      "source_ref": "https://docs.cloud.google.com/compute/docs/general-purpose-machines"
+    },
+    {
+      "machine_type": "n2-highmem-2",
+      "family": "n2",
+      "variant": "highmem",
+      "vcpu": 2,
+      "memory_gib": "16",
+      "source_ref": "https://docs.cloud.google.com/compute/docs/general-purpose-machines"
+    },
+    {
+      "machine_type": "n2-highmem-4",
+      "family": "n2",
+      "variant": "highmem",
+      "vcpu": 4,
+      "memory_gib": "32",
+      "source_ref": "https://docs.cloud.google.com/compute/docs/general-purpose-machines"
+    },
+    {
+      "machine_type": "n2-highmem-8",
+      "family": "n2",
+      "variant": "highmem",
+      "vcpu": 8,
+      "memory_gib": "64",
+      "source_ref": "https://docs.cloud.google.com/compute/docs/general-purpose-machines"
+    },
+    {
+      "machine_type": "n2-highmem-16",
+      "family": "n2",
+      "variant": "highmem",
+      "vcpu": 16,
+      "memory_gib": "128",
+      "source_ref": "https://docs.cloud.google.com/compute/docs/general-purpose-machines"
+    },
+    {
+      "machine_type": "n2-highmem-32",
+      "family": "n2",
+      "variant": "highmem",
+      "vcpu": 32,
+      "memory_gib": "256",
+      "source_ref": "https://docs.cloud.google.com/compute/docs/general-purpose-machines"
+    },
+    {
+      "machine_type": "n2-highmem-48",
+      "family": "n2",
+      "variant": "highmem",
+      "vcpu": 48,
+      "memory_gib": "384",
+      "source_ref": "https://docs.cloud.google.com/compute/docs/general-purpose-machines"
+    },
+    {
+      "machine_type": "n2-highmem-64",
+      "family": "n2",
+      "variant": "highmem",
+      "vcpu": 64,
+      "memory_gib": "512",
+      "source_ref": "https://docs.cloud.google.com/compute/docs/general-purpose-machines"
+    },
+    {
+      "machine_type": "n2-highmem-80",
+      "family": "n2",
+      "variant": "highmem",
+      "vcpu": 80,
+      "memory_gib": "640",
+      "source_ref": "https://docs.cloud.google.com/compute/docs/general-purpose-machines"
+    },
+    {
+      "machine_type": "n2-highmem-96",
+      "family": "n2",
+      "variant": "highmem",
+      "vcpu": 96,
+      "memory_gib": "768",
+      "source_ref": "https://docs.cloud.google.com/compute/docs/general-purpose-machines"
+    },
+    {
+      "machine_type": "n2-highmem-128",
+      "family": "n2",
+      "variant": "highmem",
+      "vcpu": 128,
+      "memory_gib": "1024",
+      "source_ref": "https://docs.cloud.google.com/compute/docs/general-purpose-machines"
+    },
+    {
+      "machine_type": "n2-highcpu-2",
+      "family": "n2",
+      "variant": "highcpu",
+      "vcpu": 2,
+      "memory_gib": "2",
+      "source_ref": "https://docs.cloud.google.com/compute/docs/general-purpose-machines"
+    },
+    {
+      "machine_type": "n2-highcpu-4",
+      "family": "n2",
+      "variant": "highcpu",
+      "vcpu": 4,
+      "memory_gib": "4",
+      "source_ref": "https://docs.cloud.google.com/compute/docs/general-purpose-machines"
+    },
+    {
+      "machine_type": "n2-highcpu-8",
+      "family": "n2",
+      "variant": "highcpu",
+      "vcpu": 8,
+      "memory_gib": "8",
+      "source_ref": "https://docs.cloud.google.com/compute/docs/general-purpose-machines"
+    },
+    {
+      "machine_type": "n2-highcpu-16",
+      "family": "n2",
+      "variant": "highcpu",
+      "vcpu": 16,
+      "memory_gib": "16",
+      "source_ref": "https://docs.cloud.google.com/compute/docs/general-purpose-machines"
+    },
+    {
+      "machine_type": "n2-highcpu-32",
+      "family": "n2",
+      "variant": "highcpu",
+      "vcpu": 32,
+      "memory_gib": "32",
+      "source_ref": "https://docs.cloud.google.com/compute/docs/general-purpose-machines"
+    },
+    {
+      "machine_type": "n2-highcpu-48",
+      "family": "n2",
+      "variant": "highcpu",
+      "vcpu": 48,
+      "memory_gib": "48",
+      "source_ref": "https://docs.cloud.google.com/compute/docs/general-purpose-machines"
+    },
+    {
+      "machine_type": "n2-highcpu-64",
+      "family": "n2",
+      "variant": "highcpu",
+      "vcpu": 64,
+      "memory_gib": "64",
+      "source_ref": "https://docs.cloud.google.com/compute/docs/general-purpose-machines"
+    },
+    {
+      "machine_type": "n2-highcpu-80",
+      "family": "n2",
+      "variant": "highcpu",
+      "vcpu": 80,
+      "memory_gib": "80",
+      "source_ref": "https://docs.cloud.google.com/compute/docs/general-purpose-machines"
+    },
+    {
+      "machine_type": "n2-highcpu-96",
+      "family": "n2",
+      "variant": "highcpu",
+      "vcpu": 96,
+      "memory_gib": "96",
+      "source_ref": "https://docs.cloud.google.com/compute/docs/general-purpose-machines"
+    }
+  ]
+}

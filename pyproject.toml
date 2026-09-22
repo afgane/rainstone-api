@@ -35,6 +35,10 @@ packages = ["backend/rainstone"]
 [tool.pytest.ini_options]
 testpaths = ["backend/tests"]
 addopts = "-q"
+# scripts/ carries the GCP pricing publisher, tested from backend/tests/unit
+# alongside the application it feeds; this makes it importable there without
+# packaging it into the rainstone wheel.
+pythonpath = ["scripts"]
 
 [tool.ruff]
 line-length = 110

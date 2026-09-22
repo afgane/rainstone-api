@@ -25,6 +25,7 @@ COPY alembic.ini fixtures/phase1.json catalog/gcp-2026-09-19.json ./
 FROM backend-base AS backend-dev
 COPY fixtures/ fixtures/
 COPY catalog/ catalog/
+COPY scripts/ scripts/
 
 FROM backend-base AS runtime
 COPY --from=frontend-build /app/frontend/dist /app/static

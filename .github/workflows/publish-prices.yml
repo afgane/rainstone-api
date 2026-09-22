@@ -1,0 +1,115 @@
+name: Publish GCP pricing catalog
+
+# Monthly, plus a manual button for the maintainer. Never triggered by push or
+# pull_request, so a PR run never sees the secrets below: those only exist in
+# the protected `gcp-pricing-publisher` environment this workflow declares.
+on:
+  schedule:
+    - cron: "17 6 1 * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: publish-gcp-catalog
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    # Trusted default-branch code only: schedule and workflow_dispatch never
+    # run against a fork or a PR head, so this environment's secrets are safe
+    # to expose here.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: gcp-pricing-publisher
+    permissions:
+      contents: write
+    outputs:
+      catalog_id: ${{ steps.publish.outputs.catalog_id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install --no-cache-dir -r requirements.lock
+          pip install --no-cache-dir --no-deps .
+
+      - name: Fetch, normalize, sign and write the catalog
+        id: publish
+        env:
+          GCP_CATALOG_API_KEY: ${{ secrets.GCP_CATALOG_API_KEY }}
+          GCP_CATALOG_SIGNING_KEY: ${{ secrets.GCP_CATALOG_SIGNING_KEY }}
+          CATALOG_FEED_URL: ${{ vars.CATALOG_FEED_URL }}
+        run: |
+          set -euo pipefail
+          default_feed="https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/gcp/latest.json"
+          python scripts/publish_gcp_catalog.py \
+            --key-id "${{ vars.CATALOG_KEY_ID }}" \
+            --output-dir gcp-catalog-output \
+            --previous-catalog "${CATALOG_FEED_URL:-$default_feed}"
+          catalog_id=$(python -c "import json; print(json.load(open('gcp-catalog-output/gcp/latest.json'))['catalog_id'])")
+          echo "catalog_id=$catalog_id" >> "$GITHUB_OUTPUT"
+
+      - name: Verify the freshly signed catalog against the bundled public key
+        run: |
+          python scripts/verify_published_catalog.py \
+            gcp-catalog-output/gcp/latest.json \
+            --key-id "${{ vars.CATALOG_KEY_ID }}" \
+            --public-key "${{ vars.CATALOG_PUBLIC_KEY }}"
+
+      - name: Sync the pricing archive branch
+        run: |
+          set -euo pipefail
+          git config user.name "rainstone-pricing-bot"
+          git config user.email "noreply@rainstone.invalid"
+          if git ls-remote --exit-code --heads origin gcp-pricing-archive >/dev/null 2>&1; then
+            git fetch origin gcp-pricing-archive
+            git worktree add -B gcp-pricing-archive archive origin/gcp-pricing-archive
+          else
+            git worktree add --detach archive
+            (cd archive && git checkout --orphan gcp-pricing-archive && git rm -rf . >/dev/null)
+          fi
+          mkdir -p archive/gcp/versions
+          cp gcp-catalog-output/gcp/versions/*.json archive/gcp/versions/
+          cp gcp-catalog-output/gcp/latest.json archive/gcp/latest.json
+          cd archive
+          git add gcp
+          if git diff --cached --quiet; then
+            echo "No archive changes; a rerun produced identical bytes."
+          else
+            git commit -m "Publish GCP pricing snapshot ${{ steps.publish.outputs.catalog_id }}"
+            git push origin HEAD:gcp-pricing-archive
+          fi
+
+  deploy:
+    # A separate job and a separate, GitHub-managed `github-pages` environment:
+    # the publisher's provider/signing secrets never need to exist here.
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    permissions:
+      pages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: gcp-pricing-archive
+
+      - run: touch .nojekyll
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: .
+
+      - uses: actions/deploy-pages@v4
+        id: deployment

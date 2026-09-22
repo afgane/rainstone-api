@@ -1,0 +1,215 @@
+{
+  "skus": [
+    {
+      "name": "services/6F81-5844-456A/skus/N2D-CORE-0001",
+      "skuId": "N2D-CORE-0001",
+      "description": "N2D AMD Instance Core running in Americas",
+      "category": {
+        "serviceDisplayName": "Compute Engine",
+        "resourceFamily": "Compute",
+        "resourceGroup": "N2DStandard",
+        "usageType": "OnDemand"
+      },
+      "serviceRegions": [
+        "us-central1",
+        "us-east1",
+        "us-east4",
+        "us-west1",
+        "northamerica-northeast1",
+        "southamerica-east1"
+      ],
+      "pricingInfo": [
+        {
+          "effectiveTime": "2026-01-01T00:00:00Z",
+          "summary": "",
+          "pricingExpression": {
+            "usageUnit": "h",
+            "usageUnitDescription": "hour",
+            "displayQuantity": 1,
+            "tieredRates": [
+              {
+                "startUsageAmount": 0,
+                "unitPrice": {
+                  "currencyCode": "USD",
+                  "units": "0",
+                  "nanos": 25000000
+                }
+              }
+            ]
+          },
+          "currencyConversionRate": 1
+        }
+      ],
+      "serviceProviderName": "Google"
+    },
+    {
+      "name": "services/6F81-5844-456A/skus/N2-CUSTOM-001",
+      "skuId": "N2-CUSTOM-001",
+      "description": "N2 Custom Instance Core running in Americas",
+      "category": {
+        "serviceDisplayName": "Compute Engine",
+        "resourceFamily": "Compute",
+        "resourceGroup": "N2Custom",
+        "usageType": "OnDemand"
+      },
+      "serviceRegions": [
+        "us-central1",
+        "us-east1",
+        "us-east4",
+        "us-west1",
+        "northamerica-northeast1",
+        "southamerica-east1"
+      ],
+      "pricingInfo": [
+        {
+          "effectiveTime": "2026-01-01T00:00:00Z",
+          "summary": "",
+          "pricingExpression": {
+            "usageUnit": "h",
+            "usageUnitDescription": "hour",
+            "displayQuantity": 1,
+            "tieredRates": [
+              {
+                "startUsageAmount": 0,
+                "unitPrice": {
+                  "currencyCode": "USD",
+                  "units": "0",
+                  "nanos": 33000000
+                }
+              }
+            ]
+          },
+          "currencyConversionRate": 1
+        }
+      ],
+      "serviceProviderName": "Google"
+    },
+    {
+      "name": "services/6F81-5844-456A/skus/N2-SPOT-0001",
+      "skuId": "N2-SPOT-0001",
+      "description": "Spot Preemptible N2 Instance Core running in Americas",
+      "category": {
+        "serviceDisplayName": "Compute Engine",
+        "resourceFamily": "Compute",
+        "resourceGroup": "N2Standard",
+        "usageType": "Preemptible"
+      },
+      "serviceRegions": [
+        "us-central1",
+        "us-east1",
+        "us-east4",
+        "us-west1",
+        "northamerica-northeast1",
+        "southamerica-east1"
+      ],
+      "pricingInfo": [
+        {
+          "effectiveTime": "2026-01-01T00:00:00Z",
+          "summary": "",
+          "pricingExpression": {
+            "usageUnit": "h",
+            "usageUnitDescription": "hour",
+            "displayQuantity": 1,
+            "tieredRates": [
+              {
+                "startUsageAmount": 0,
+                "unitPrice": {
+                  "currencyCode": "USD",
+                  "units": "0",
+                  "nanos": 7000000
+                }
+              }
+            ]
+          },
+          "currencyConversionRate": 1
+        }
+      ],
+      "serviceProviderName": "Google"
+    },
+    {
+      "name": "services/6F81-5844-456A/skus/T2A-CORE-0001",
+      "skuId": "T2A-CORE-0001",
+      "description": "T2A Instance Core running in Americas",
+      "category": {
+        "serviceDisplayName": "Compute Engine",
+        "resourceFamily": "Compute",
+        "resourceGroup": "T2AStandard",
+        "usageType": "OnDemand"
+      },
+      "serviceRegions": [
+        "us-central1",
+        "us-east1",
+        "us-east4",
+        "us-west1",
+        "northamerica-northeast1",
+        "southamerica-east1"
+      ],
+      "pricingInfo": [
+        {
+          "effectiveTime": "2026-01-01T00:00:00Z",
+          "summary": "",
+          "pricingExpression": {
+            "usageUnit": "h",
+            "usageUnitDescription": "hour",
+            "displayQuantity": 1,
+            "tieredRates": [
+              {
+                "startUsageAmount": 0,
+                "unitPrice": {
+                  "currencyCode": "USD",
+                  "units": "0",
+                  "nanos": 21000000
+                }
+              }
+            ]
+          },
+          "currencyConversionRate": 1
+        }
+      ],
+      "serviceProviderName": "Google"
+    },
+    {
+      "name": "services/6F81-5844-456A/skus/N2-COMMIT-001",
+      "skuId": "N2-COMMIT-001",
+      "description": "Commitment v1: N2 Predefined Instance Core",
+      "category": {
+        "serviceDisplayName": "Compute Engine",
+        "resourceFamily": "Compute",
+        "resourceGroup": "N2CommitCore",
+        "usageType": "Commit1Yr"
+      },
+      "serviceRegions": [
+        "us-central1",
+        "us-east1",
+        "us-east4",
+        "us-west1",
+        "northamerica-northeast1",
+        "southamerica-east1"
+      ],
+      "pricingInfo": [
+        {
+          "effectiveTime": "2026-01-01T00:00:00Z",
+          "summary": "",
+          "pricingExpression": {
+            "usageUnit": "h",
+            "usageUnitDescription": "hour",
+            "displayQuantity": 1,
+            "tieredRates": [
+              {
+                "startUsageAmount": 0,
+                "unitPrice": {
+                  "currencyCode": "USD",
+                  "units": "0",
+                  "nanos": 15000000
+                }
+              }
+            ]
+          },
+          "currencyConversionRate": 1
+        }
+      ],
+      "serviceProviderName": "Google"
+    }
+  ],
+  "nextPageToken": ""
+}
