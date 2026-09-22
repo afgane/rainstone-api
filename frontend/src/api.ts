@@ -96,6 +96,10 @@ export interface StatusCheck {
 export interface Status {
   generated_at: string; overall_status: string; auth_mode: string; tenant: string;
   checks: StatusCheck[]; failed_capabilities: string[];
+  recorded_reports?: Array<{
+    context: string; generated_at: string; age_seconds: number; stale: boolean;
+    overall_status: string;
+  }>;
 }
 
 function meta(name: string): string {

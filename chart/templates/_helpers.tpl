@@ -19,12 +19,20 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 app.kubernetes.io/part-of: galaxy
 {{- end -}}
 
+{{/* Per-component service accounts: web, collector and init are distinct. */}}
 {{- define "rainstone.serviceAccountName" -}}
-{{- if .Values.serviceAccount.create -}}
-{{- default (include "rainstone.fullname" .) .Values.serviceAccount.name -}}
+{{- $component := index . 1 -}}
+{{- $root := index . 0 -}}
+{{- $config := index $root.Values.serviceAccounts $component -}}
+{{- if $root.Values.serviceAccounts.create -}}
+{{- default (printf "%s-%s" (include "rainstone.fullname" $root) $component) $config.name -}}
 {{- else -}}
-{{- default "default" .Values.serviceAccount.name -}}
+{{- default "default" $config.name -}}
 {{- end -}}
+{{- end -}}
+
+{{- define "rainstone.sourceSecret" -}}
+{{- default (printf "%s-source" (include "rainstone.fullname" .)) .Values.source.dsnSecret -}}
 {{- end -}}
 
 {{- define "rainstone.image" -}}
@@ -67,8 +75,15 @@ app.kubernetes.io/part-of: galaxy
 - name: RAINSTONE_CATALOG_REQUIRE_SIGNATURE
   value: {{ .Values.catalog.requireSignature | quote }}
 {{- if .Values.catalog.feedUrl }}
+{{- if not .Values.catalog.trustedKeys }}
+{{- fail "catalog.trustedKeys is required when catalog.feedUrl is set: a downloaded artifact is untrusted until its signature verifies" }}
+{{- end }}
 - name: RAINSTONE_CATALOG_FEED_URL
   value: {{ .Values.catalog.feedUrl | quote }}
+{{- end }}
+{{- if .Values.catalog.trustedKeys }}
+- name: RAINSTONE_CATALOG_TRUSTED_KEYS
+  value: {{ .Values.catalog.trustedKeys | quote }}
 {{- end }}
 {{- if .Values.baseline.policyVersion }}
 - name: RAINSTONE_BASELINE_POLICY_VERSION
@@ -90,13 +105,13 @@ app.kubernetes.io/part-of: galaxy
 
 {{/* Source and observation settings the collector alone needs. */}}
 {{- define "rainstone.collectorEnv" -}}
-{{- if .Values.source.dsnSecret }}
 - name: RAINSTONE_GALAXY_DATABASE_URL
   valueFrom:
     secretKeyRef:
-      name: {{ .Values.source.dsnSecret }}
+      name: {{ include "rainstone.sourceSecret" . }}
       key: {{ .Values.source.dsnSecretKey }}
-{{- end }}
+- name: RAINSTONE_COLLECTOR_HEARTBEAT_PATH
+  value: /tmp/rainstone-collector.heartbeat
 - name: RAINSTONE_GALAXY_STATEMENT_TIMEOUT
   value: {{ .Values.source.statementTimeout | quote }}
 - name: RAINSTONE_GALAXY_BATCH_SIZE

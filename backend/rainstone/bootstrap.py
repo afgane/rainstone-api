@@ -10,7 +10,11 @@ It never asks for an operator kubeconfig, cloud token or Galaxy superuser
 credential, and it never grants Rainstone's own database superuser rights.
 """
 
+import json
 import secrets
+import ssl
+import urllib.error
+import urllib.request
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -20,7 +24,13 @@ from sqlalchemy import create_engine, select, text
 from sqlalchemy.engine import Connection
 from sqlalchemy.orm import Session
 
-from rainstone.adapters.galaxy_db import REQUIRED_TABLES, GalaxyCapabilities, discover_capabilities
+from rainstone.adapters.galaxy_db import (
+    REQUIRED_TABLES,
+    SOURCE_IDENTITY_SCHEMA,
+    SOURCE_IDENTITY_TABLE,
+    GalaxyCapabilities,
+    discover_capabilities,
+)
 from rainstone.config import Settings, get_settings
 from rainstone.ingestion import stable_id
 from rainstone.models import DeploymentPolicy, Owner, SourceBinding, Tenant
@@ -67,6 +77,44 @@ def _password_literal(password: str) -> str:
     if not password or not set(password) <= allowed:
         raise ValueError("reader password must be URL-safe base64 characters")
     return f"'{password}'"
+
+
+def enroll_source_identity(connection: Connection, *, role: str) -> tuple[str, bool]:
+    """Give this source database a durable identity the reader can read.
+
+    The identity lives in the source database, so it survives upgrades and
+    restores of that database and travels with a restored copy. A different
+    database, even with an identical schema, gets a different identity and is
+    therefore refused until an operator enrolls it deliberately.
+    """
+    quoted_role = _quote(role)
+    schema = _quote(SOURCE_IDENTITY_SCHEMA)
+    table = f"{schema}.{_quote(SOURCE_IDENTITY_TABLE)}"
+    connection.execute(text(f"CREATE SCHEMA IF NOT EXISTS {schema}"))
+    connection.execute(
+        text(
+            f"CREATE TABLE IF NOT EXISTS {table} ("
+            "identity uuid PRIMARY KEY, "
+            "enrolled_at timestamptz NOT NULL DEFAULT now(), "
+            "note text)"
+        )
+    )
+    existing = connection.execute(
+        text(f"SELECT identity::text AS identity FROM {table} ORDER BY enrolled_at LIMIT 1")
+    ).scalar()
+    created = existing is None
+    if created:
+        existing = str(uuid.uuid4())
+        connection.execute(
+            text(f"INSERT INTO {table} (identity, note) VALUES (:identity, :note)"),
+            {
+                "identity": existing,
+                "note": "Rainstone source-lifetime identity; do not copy between databases.",
+            },
+        )
+    connection.execute(text(f"GRANT USAGE ON SCHEMA {schema} TO {quoted_role}"))
+    connection.execute(text(f"GRANT SELECT ON {table} TO {quoted_role}"))
+    return existing, created
 
 
 def provision_reader(
@@ -126,6 +174,65 @@ def provision_reader(
     return rotated
 
 
+SERVICE_ACCOUNT_DIR = Path("/var/run/secrets/kubernetes.io/serviceaccount")
+
+
+def write_kubernetes_secret(
+    target: str,
+    value: str,
+    *,
+    service_account_dir: Path = SERVICE_ACCOUNT_DIR,
+    api_server: str = "https://kubernetes.default.svc",
+) -> dict:
+    """Store the scoped reader DSN where the collector can mount it.
+
+    Initialization runs in the cluster with a role that may write exactly this
+    Secret, so an operator never has to copy a credential by hand.
+    """
+    name, _, key = target.partition("/")
+    key = key or "dsn"
+    namespace = (service_account_dir / "namespace").read_text().strip()
+    token = (service_account_dir / "token").read_text().strip()
+    ca_path = service_account_dir / "ca.crt"
+    context = ssl.create_default_context(cafile=str(ca_path)) if ca_path.exists() else None
+    url = f"{api_server}/api/v1/namespaces/{namespace}/secrets/{name}"
+    patch = json.dumps({"stringData": {key: value}}).encode()
+
+    def call(method: str, endpoint: str, body: bytes, content_type: str) -> int:
+        request = urllib.request.Request(
+            endpoint,
+            data=body,
+            method=method,
+            headers={"Authorization": f"Bearer {token}", "Content-Type": content_type},
+        )
+        with urllib.request.urlopen(request, timeout=30, context=context) as response:  # noqa: S310
+            return response.status
+
+    try:
+        call("PATCH", url, patch, "application/strategic-merge-patch+json")
+        created = False
+    except urllib.error.HTTPError as error:
+        if error.code != 404:
+            raise
+        body = json.dumps(
+            {
+                "apiVersion": "v1",
+                "kind": "Secret",
+                "metadata": {"name": name, "namespace": namespace},
+                "type": "Opaque",
+                "stringData": {key: value},
+            }
+        ).encode()
+        call(
+            "POST",
+            f"{api_server}/api/v1/namespaces/{namespace}/secrets",
+            body,
+            "application/json",
+        )
+        created = True
+    return {"secret": name, "key": key, "namespace": namespace, "created": created}
+
+
 def reader_dsn(admin_dsn: str, role: str, password: str) -> str:
     """Rewrite the bootstrap DSN's credentials for the scoped reader role."""
     from urllib.parse import quote, urlsplit, urlunsplit
@@ -165,6 +272,8 @@ def seed_instance(
     owner_source_id: str,
     owner_label: str,
     descriptor: dict,
+    source_identity: str,
+    replace_source: bool = False,
 ) -> dict:
     """Idempotently seed tenant identity, source binding, policy and owner."""
     tenant_id = stable_id("tenant", settings.tenant_slug)
@@ -189,6 +298,7 @@ def seed_instance(
     }
     tenant.synced_at = datetime.now(UTC)
 
+    now = datetime.now(UTC)
     binding = session.scalar(select(SourceBinding).where(SourceBinding.tenant_id == tenant_id))
     if binding is None:
         binding = SourceBinding(
@@ -196,16 +306,23 @@ def seed_instance(
             tenant_id=tenant_id,
             instance_uuid=uuid.uuid4(),
             source_kind="galaxy_db",
-            source_fingerprint=capabilities.schema_fingerprint,
-            bound_at=datetime.now(UTC),
+            source_identity=source_identity,
+            bound_at=now,
+            enrolled_at=now,
         )
         session.add(binding)
-    elif binding.source_fingerprint != capabilities.schema_fingerprint:
-        # A replaced source database must not silently inherit this identity.
-        raise RuntimeError(
-            "this instance is already bound to a different Galaxy source schema; "
-            "seed a new instance identity instead of reusing this one"
-        )
+    elif binding.source_identity != source_identity:
+        if not replace_source:
+            # A different source database must not inherit this instance's
+            # identity, and with it another database's job IDs.
+            raise RuntimeError(
+                "this instance is bound to a different source database "
+                f"({binding.source_identity}); re-run bootstrap with --replace-source to "
+                "enroll the new source deliberately, or seed a new instance identity"
+            )
+        binding.source_identity = source_identity
+        binding.enrolled_at = now
+    binding.schema_fingerprint = capabilities.schema_fingerprint
     binding.source_version = capabilities.source_version
     binding.descriptor = descriptor
 
@@ -247,6 +364,7 @@ def seed_instance(
     return {
         "tenant": settings.tenant_slug,
         "instance_uuid": str(binding.instance_uuid),
+        "source_identity": binding.source_identity,
         "owner_source_id": owner_source_id,
         "owner_label": owner_label,
         "baseline_policy": policy_result,
@@ -263,6 +381,8 @@ def bootstrap(
     rotate: bool = False,
     dsn_output: Path | None = None,
     descriptor: dict | None = None,
+    replace_source: bool = False,
+    secret_target: str | None = None,
 ) -> dict:
     """Provision the reader role, seed identity, and report what to store."""
     settings = settings or get_settings()
@@ -284,6 +404,7 @@ def bootstrap(
             schema=schema,
             rotate=rotate or not existing,
         )
+        source_identity, identity_created = enroll_source_identity(connection, role=reader_role)
     credential = ReaderCredential(
         role=reader_role,
         password=password if (rotated or not existing) else "",
@@ -302,15 +423,30 @@ def bootstrap(
             owner_source_id=owner_source_id,
             owner_label=owner_label,
             descriptor=descriptor or {},
+            source_identity=source_identity,
+            replace_source=replace_source,
         )
     if dsn_output and credential.dsn:
         dsn_output.parent.mkdir(parents=True, exist_ok=True)
         dsn_output.write_text(credential.dsn)
         dsn_output.chmod(0o600)
+    secret_result = None
+    if secret_target and credential.dsn:
+        secret_result = write_kubernetes_secret(secret_target, credential.dsn)
+    with Session(application_engine) as session:
+        # Record what initialization could verify, in its own credentials'
+        # context, so the web process can report it later.
+        from rainstone.doctor import record_report, run_checks
+
+        report = run_checks(session, settings, context="bootstrap")
+        record_report(session, stable_id("tenant", settings.tenant_slug), report)
+        session.commit()
     return {
         **seeded,
+        "source_identity_created": identity_created,
         "reader_role": credential.role,
         "reader_credential_written": bool(dsn_output and credential.dsn),
+        "reader_credential_secret": secret_result,
         "reader_credential_rotated": credential.rotated,
         "schema_compatible": capabilities.compatible,
         "schema_missing": list(capabilities.missing),

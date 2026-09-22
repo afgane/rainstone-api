@@ -39,6 +39,18 @@ METADATA_TOKEN_URL = (
     "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token"
 )
 INSTANCE_REFERENCE = re.compile(r"zones/(?P<zone>[a-z0-9-]+)/instances/(?P<instance>\d+)")
+
+
+class CloudAccessDenied(RuntimeError):
+    """The deployment's identity lacks a permission this observation needs.
+
+    Denied is not the same as absent: a missing resource is a normal answer,
+    while a denial is a capability gap an operator must see.
+    """
+
+    def __init__(self, operation: str, detail: str = "") -> None:
+        super().__init__(f"{operation} was denied{': ' + detail if detail else ''}")
+        self.operation = operation
 ATTEMPT_REFERENCE = re.compile(r"Attempt (?P<ordinal>\d+) failed")
 
 
@@ -89,6 +101,8 @@ class GcpClient(Protocol):
         self, project: str, instance_id: str, *, after: datetime | None = None
     ) -> list[dict]: ...
 
+    def probe_access(self, project: str, location: str) -> dict[str, str]: ...
+
 
 class HttpGcpClient:
     """REST access using the deployment's own runtime identity.
@@ -109,7 +123,7 @@ class HttpGcpClient:
         with urllib.request.urlopen(request, timeout=10) as response:  # noqa: S310
             return json.load(response)["access_token"]
 
-    def _get(self, url: str, params: dict | None = None) -> dict | None:
+    def _get(self, url: str, params: dict | None = None, *, operation: str = "read") -> dict | None:
         if params:
             url = f"{url}?{urllib.parse.urlencode(params)}"
         request = urllib.request.Request(
@@ -119,11 +133,13 @@ class HttpGcpClient:
             with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310
                 return json.load(response)
         except urllib.error.HTTPError as error:
-            if error.code in {403, 404}:
+            if error.code in {401, 403}:
+                raise CloudAccessDenied(operation, error.reason or "") from error
+            if error.code == 404:
                 return None
             raise
 
-    def _post(self, url: str, payload: dict) -> dict | None:
+    def _post(self, url: str, payload: dict, *, operation: str = "read") -> dict | None:
         body = json.dumps(payload).encode()
         request = urllib.request.Request(
             url,
@@ -137,14 +153,17 @@ class HttpGcpClient:
             with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310
                 return json.load(response)
         except urllib.error.HTTPError as error:
-            if error.code in {403, 404}:
+            if error.code in {401, 403}:
+                raise CloudAccessDenied(operation, error.reason or "") from error
+            if error.code == 404:
                 return None
             raise
 
     def get_batch_job(self, project: str, location: str, job_id: str) -> dict | None:
         return self._get(
             "https://batch.googleapis.com/v1/"
-            f"projects/{project}/locations/{location}/jobs/{job_id}"
+            f"projects/{project}/locations/{location}/jobs/{job_id}",
+            operation="batch.jobs.get",
         )
 
     def list_batch_tasks(self, job_name: str, group: str = "group0") -> list[dict]:
@@ -155,7 +174,9 @@ class HttpGcpClient:
             if page_token:
                 params["pageToken"] = page_token
             payload = self._get(
-                f"https://batch.googleapis.com/v1/{job_name}/taskGroups/{group}/tasks", params
+                f"https://batch.googleapis.com/v1/{job_name}/taskGroups/{group}/tasks",
+                params,
+                operation="batch.tasks.list",
             )
             if not payload:
                 return tasks
@@ -167,7 +188,8 @@ class HttpGcpClient:
     def get_instance(self, project: str, zone: str, instance_id: str) -> dict | None:
         return self._get(
             "https://compute.googleapis.com/compute/v1/"
-            f"projects/{project}/zones/{zone}/instances/{instance_id}"
+            f"projects/{project}/zones/{zone}/instances/{instance_id}",
+            operation="compute.instances.get",
         )
 
     def instance_lifecycle_entries(
@@ -187,7 +209,8 @@ class HttpGcpClient:
         while True:
             payload = self._post(
                 "https://logging.googleapis.com/v2/entries:list",
-                {
+                operation="logging.logEntries.list",
+                payload={
                     "resourceNames": [f"projects/{project}"],
                     "filter": query,
                     "orderBy": "timestamp asc",
@@ -201,6 +224,53 @@ class HttpGcpClient:
             page_token = payload.get("nextPageToken")
             if not page_token:
                 return entries
+
+
+    def probe_access(self, project: str, location: str) -> dict[str, str]:
+        """Exercise the operations each enabled observation actually needs.
+
+        A probe reports `ok`, `denied` or `unavailable`; a missing resource is
+        `ok`, because absence is a valid answer from an API that answered.
+        """
+        probes = {
+            "batch.jobs.list": (
+                self._get,
+                (
+                    "https://batch.googleapis.com/v1/"
+                    f"projects/{project}/locations/{location}/jobs",
+                    {"pageSize": 1},
+                ),
+            ),
+            "compute.instances.list": (
+                self._get,
+                (
+                    "https://compute.googleapis.com/compute/v1/"
+                    f"projects/{project}/aggregated/instances",
+                    {"maxResults": 1},
+                ),
+            ),
+            "logging.logEntries.list": (
+                self._post,
+                (
+                    "https://logging.googleapis.com/v2/entries:list",
+                    {
+                        "resourceNames": [f"projects/{project}"],
+                        "filter": 'resource.type="gce_instance"',
+                        "pageSize": 1,
+                    },
+                ),
+            ),
+        }
+        results: dict[str, str] = {}
+        for operation, (call, arguments) in probes.items():
+            try:
+                call(*arguments, operation=operation)
+                results[operation] = "ok"
+            except CloudAccessDenied:
+                results[operation] = "denied"
+            except OSError as error:
+                results[operation] = f"unavailable: {type(error).__name__}"
+        return results
 
 
 @dataclass
@@ -496,6 +566,7 @@ class BatchCollector:
         targets: Callable[[], Sequence[BatchTarget]],
         *,
         max_targets: int = 25,
+        terminal_share: float = 0.2,
         enrich_compute: bool = True,
         enrich_logging: bool = True,
         now: datetime | None = None,
@@ -503,6 +574,7 @@ class BatchCollector:
         self._client = client
         self._targets = targets
         self._max_targets = max_targets
+        self._terminal_share = terminal_share
         self._enrich_compute = enrich_compute
         self._enrich_logging = enrich_logging
         self._now = now
@@ -510,29 +582,80 @@ class BatchCollector:
     def _clock(self) -> datetime:
         return self._now or datetime.now(UTC)
 
-    def _select(self, targets: Sequence[BatchTarget], offset: int) -> tuple[list[BatchTarget], int]:
+    def _page(
+        self, items: Sequence[BatchTarget], offset: int, slots: int
+    ) -> tuple[list[BatchTarget], int, bool]:
+        """One non-overlapping page, with the offset wrapping at the end."""
+        if not items or slots <= 0:
+            return [], 0, True
+        start = offset if offset < len(items) else 0
+        window = list(items[start : start + slots])
+        next_offset = start + len(window)
+        if next_offset >= len(items):
+            return window, 0, True
+        return window, next_offset, False
+
+    def _select(
+        self, targets: Sequence[BatchTarget], state: dict
+    ) -> tuple[list[BatchTarget], bool]:
+        """Page active targets fairly while reserving terminal reconciliation.
+
+        Always taking the first N active targets starves the rest whenever the
+        active set is larger than one page, and leaves reconciliation no slots
+        while work keeps arriving. Both lists page with their own durable
+        cursor; when the budget is too small to reserve a reconciliation slot,
+        the next cycle gives terminal work the first slots instead, so neither
+        list can be starved indefinitely.
+        """
         active = [target for target in targets if target.active]
-        rest = [target for target in targets if not target.active]
-        room = max(self._max_targets - len(active), 0)
-        if not rest:
-            return active[: self._max_targets], 0
-        start = offset % len(rest)
-        window = rest[start : start + room]
-        if len(window) < room:
-            window += rest[: room - len(window)]
-        return [*active[: self._max_targets], *window], start + len(window)
+        terminal = [target for target in targets if not target.active]
+        reserved = (
+            min(len(terminal), max(1, int(self._max_targets * self._terminal_share)))
+            if terminal
+            else 0
+        )
+        terminal_first = bool(state.pop("terminal_due", False)) and terminal
+        if terminal_first:
+            terminal_slots = min(len(terminal), self._max_targets)
+            active_slots = max(self._max_targets - terminal_slots, 0)
+        elif active:
+            active_slots = max(self._max_targets - reserved, 1)
+            terminal_slots = 0
+        else:
+            active_slots, terminal_slots = 0, min(len(terminal), self._max_targets)
+
+        active_page, active_offset, active_done = self._page(
+            active, int(state.get("active_offset", 0)), active_slots
+        )
+        if not terminal_first:
+            terminal_slots = max(self._max_targets - len(active_page), 0)
+        terminal_page, terminal_offset, _ = self._page(
+            terminal, int(state.get("terminal_offset", 0)), terminal_slots
+        )
+        state["active_offset"] = active_offset
+        state["terminal_offset"] = terminal_offset
+        if terminal and not terminal_page and active_done:
+            # This cycle had no room for reconciliation; the next one leads with
+            # it rather than letting a busy active set starve it.
+            state["terminal_due"] = True
+        return [*active_page, *terminal_page], active_done
 
     def collect(self, cursor: dict) -> ObservationBatch:
         started = self._clock()
         state = dict(cursor)
         targets = list(self._targets())
-        selected, next_offset = self._select(targets, int(state.get("offset", 0)))
-        state["offset"] = next_offset
+        selected, active_done = self._select(targets, state)
         attempts: list[NormalizedAttempt] = []
         gaps: list[NormalizedGap] = []
         unresolved = 0
         for target in selected:
-            job = self._client.get_batch_job(target.project, target.location, target.external_id)
+            try:
+                job = self._client.get_batch_job(
+                    target.project, target.location, target.external_id
+                )
+            except CloudAccessDenied as denial:
+                # A denied primary read is a capability gap, not a missing job.
+                raise denial
             if job is None:
                 unresolved += 1
                 gaps.append(
@@ -551,7 +674,24 @@ class BatchCollector:
                 )
                 continue
             tasks = self._client.list_batch_tasks(job["name"])
-            instances, lifecycles = self._enrich(job, tasks, target)
+            try:
+                instances, lifecycles = self._enrich(job, tasks, target)
+            except CloudAccessDenied as denial:
+                # Enrichment is optional: degrade with a visible gap rather than
+                # failing collection of the Batch record itself.
+                instances, lifecycles = {}, {}
+                gaps.append(
+                    NormalizedGap(
+                        source=SOURCE_NAME,
+                        kind="cloud_enrichment_denied",
+                        detail=(
+                            f"{denial.operation} is denied, so VM lifetimes for Galaxy job "
+                            f"{target.job_source_id} use task events only."
+                        ),
+                        gap_end=started,
+                        recoverable=True,
+                    )
+                )
             attempts.extend(
                 normalize_batch_job(
                     job,
@@ -571,11 +711,16 @@ class BatchCollector:
             cursor=state,
             metrics={
                 "targets": len(targets),
+                "active_targets": sum(1 for target in targets if target.active),
                 "observed": len(selected),
                 "attempts": len(attempts),
                 "unresolved": unresolved,
+                "active_offset": state["active_offset"],
+                "terminal_offset": state["terminal_offset"],
             },
-            exhausted=len(selected) >= len(targets),
+            # Another page of active work is drained immediately rather than
+            # waiting a full refresh interval.
+            exhausted=active_done,
         )
 
     def _enrich(

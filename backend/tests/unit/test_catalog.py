@@ -59,16 +59,20 @@ def test_newer_schema_versions_are_refused() -> None:
         validate(artifact(schema_version=99), source="test")
 
 
-def test_signature_digest_mismatch_is_refused() -> None:
-    with pytest.raises(CatalogError, match="signature digest"):
+def test_a_declared_digest_that_disagrees_with_the_content_is_refused() -> None:
+    with pytest.raises(CatalogError, match="digest does not match"):
         validate(
-            artifact(signature={"key_id": "release-1", "content_digest": "0" * 64}), source="test"
+            artifact(signature={"key_id": "release-1", "content_digest": "0" * 64}),
+            source="test",
+            trusted_keys={"release-1": b"x" * 32},
         )
 
 
 def test_required_signature_is_enforced_when_configured() -> None:
     with pytest.raises(CatalogError, match="signature is required"):
-        validate(artifact(), source="test", require_signature=True)
+        validate(
+            artifact(), source="test", require_signature=True, trusted_keys={"k": b"x" * 32}
+        )
 
 
 def test_non_positive_rates_are_refused() -> None:

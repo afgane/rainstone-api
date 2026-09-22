@@ -41,6 +41,13 @@ versioned image, so they restart independently and hold different credentials.
 - The collector holds the read-only source DSN, uses in-cluster Kubernetes
   authentication, and reads cloud APIs with the deployment's own runtime
   identity. An operator kubeconfig is never mounted.
+- Web, collector and initialization run under separate service accounts.
+  Observation permissions and any Workload Identity binding belong to the
+  collector; initialization may write only the source credential Secret; the web
+  account is bound to nothing. One honest limitation: on a node whose metadata
+  server is reachable from any pod, that node-wide credential is available
+  regardless of service accounts, so restricting the metadata server remains a
+  deployment prerequisite this chart cannot enforce.
 - Rainstone's database is either an existing DSN Secret or the chart's own
   PostgreSQL deployment. Its volume and credential are annotated
   `helm.sh/resource-policy: keep`, so reporting history survives
@@ -60,10 +67,30 @@ and the baseline descriptor. Operator-facing settings stay small: enablement,
 path, persistence and retention, optional price feed, and source overrides. No
 one configures individual SKU prices.
 
-## Bootstrap
+## Initialization sequence
 
-`rainstone bootstrap` runs once per install or upgrade with installation-time
-database privileges that the application never receives:
+Install and upgrade run one ordered sequence, and every step is idempotent, so
+an interrupted run is simply re-run:
+
+1. wait for the Rainstone database;
+2. `alembic upgrade head`;
+3. `rainstone bootstrap` — provision or rotate the scoped reader, enroll this
+   source database's identity, resolve the shared Galaxy account, seed the
+   instance and baseline policy, and write the reader DSN into the source
+   Secret;
+4. import or refresh the price catalog;
+5. record a self-check in the initialization context.
+
+The chart runs this as a post-install and post-upgrade hook, because the
+chart's own database does not exist before install. Application pods do not
+depend on hook ordering: each waits on `rainstone wait-ready` in an init
+container, so no pod serves against an unmigrated or unenrolled database, and a
+rollout completes only after initialization does.
+
+Supply `source.adminSecret` (a Secret holding an installation-time DSN) and
+`source.sharedAccount`. The application never receives that credential: the
+initialization account may write exactly one Secret, the scoped reader DSN that
+the collector mounts. Running the command directly is still supported:
 
 ```console
 rainstone bootstrap \
@@ -72,40 +99,64 @@ rainstone bootstrap \
     --write-dsn /secrets/dsn
 ```
 
-It creates or rotates a dedicated reader role with column-level grants over the
-allowlisted tables, writes the scoped DSN for the chart to store, resolves the
-shared Galaxy account to its source owner ID, seeds this instance's identity,
-binds that identity to the source database, and records the baseline accounting
-policy.
-
 Use Galaxy's primary database service with that dedicated read-only role. On a
 single-instance deployment the replica-only `-ro` service can have no endpoints,
 so a service named "read-only" is not sufficient; derive the hostname from the
 chart or deployment configuration.
 
-The binding matters on reuse: if the source database is replaced, the collector
-refuses to inherit the previous instance identity and asks for a new one, rather
-than silently mixing two sources' history.
+### Source identity
+
+Identity is an identifier enrolled inside the source database, in a `rainstone`
+schema the reader may select from. It is deliberately not a schema hash and not
+a release name: column-level grants make an administrator and the restricted
+reader see different columns of the same database, while two unrelated
+databases can share a schema exactly.
+
+That identifier survives upgrades and restores of the source database. A
+*different* database is refused with an explicit message until an operator
+enrolls it with `rainstone bootstrap --replace-source`, so a replacement can
+never inherit an instance's history and job IDs by accident.
+
+### Readiness and liveness
+
+Readiness reflects a compatible schema and a resolved fixed scope: `/api/ready`
+returns 503 with reasons until migrations match this release and the configured
+shared account resolves to exactly one owner. Liveness stays cheap and
+independent — `/api/health` for the web process, and a loop heartbeat
+(`rainstone heartbeat`) for the collector. A denied cloud API or an unreachable
+source degrades coverage and backs off; it does not restart collection from
+healthy sources.
 
 ## Diagnostics
 
-`rainstone doctor --json` and `/api/status` report the same read-only checks:
-database connectivity and migration state, instance identity and source
-binding, shared-account resolution, source schema compatibility, Kubernetes list
-access, supported cloud reads, baseline resolution, catalog availability and
-coverage, and per-source collection lag, cursors and recorded gaps.
+Checks run in the context that holds the credentials for them. The collector and
+initialization probe the source database, Kubernetes access and the cloud
+operations each enabled adapter actually calls, then record a sanitized,
+timestamped report. The web process runs local checks — database, migration
+state, instance identity, account resolution, baseline, catalog, collection lag
+and gaps — and reports the recorded findings alongside them.
+
+Recorded findings carry their own timestamp and age. A report older than fifteen
+minutes is marked stale and a stale success is downgraded to a warning, so an
+absent or lagging collector can never read as a current successful check.
+
+Cloud probes distinguish outcomes that used to look alike: `denied` (the
+deployment identity lacks the permission), `unavailable` (the API could not be
+reached) and `ok` — a missing resource is a valid answer from an API that
+answered, not a pass for an API that refused. Optional enrichment that is denied
+degrades coverage with a visible gap rather than failing collection.
 
 Findings name capability gaps without exposing DSNs, credentials, tokens, raw
 job parameters or arbitrary logs, so the report can be downloaded through the
-normal authenticated route from the Status view. The collector's liveness probe
-runs the same checks. Read-only checks run automatically; submitting synthetic
-jobs is an opt-in development action.
+normal authenticated route from the Status view. Read-only checks run
+automatically; submitting synthetic jobs is an opt-in development action.
 
 ## Current limitations
 
 - Price coverage is `us-central1` only, from a pinned 2026-09-19 snapshot. The
   maintained catalog feed and publisher are not yet operated, so this release
-  cannot claim unattended current-price reporting.
+  cannot claim unattended current-price reporting. Enabling a feed requires
+  `catalog.trustedKeys`; the chart refuses to render a feed URL without one.
 - The AnVIL dev pilot, live Leo-route validation, restart and upgrade exercises,
   and completed-job visibility measurement are not yet done.
 - Billing reconciliation, Spot and preemption completeness, and hosted transport

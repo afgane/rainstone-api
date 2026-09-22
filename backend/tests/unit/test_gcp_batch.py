@@ -136,7 +136,7 @@ def test_collector_reports_unreadable_resources_as_gaps() -> None:
     assert batch.metrics["unresolved"] == 1
 
 
-def test_collector_prioritizes_active_targets_and_rotates_the_rest() -> None:
+def test_active_work_leads_and_terminal_work_still_gets_a_turn() -> None:
     retry = load("batch-job-retry.json")
     error = load("batch-job-galaxy-error.json")
     client = FakeGcpClient(jobs={"galaxy-batch-demo-336": retry, "galaxy-batch-demo-53": error})
@@ -145,6 +145,65 @@ def test_collector_prioritizes_active_targets_and_rotates_the_rest() -> None:
         BatchTarget("53", "galaxy-batch-demo-53", "demo-project", "us-east4"),
     ]
     collector = BatchCollector(client, lambda: targets, max_targets=1)
+    first = collector.collect({})
+    assert {attempt.job_source_id for attempt in first.attempts} == {"336"}
+    # A single-slot budget cannot reserve reconciliation, so the next cycle
+    # leads with it instead of starving it.
+    second = collector.collect(first.cursor)
+    assert {attempt.job_source_id for attempt in second.attempts} == {"53"}
+
+
+def targets(active: int, terminal: int = 0) -> list[BatchTarget]:
+    return [
+        BatchTarget(f"a{index}", f"job-a{index}", "demo-project", "us-east4", active=True)
+        for index in range(active)
+    ] + [
+        BatchTarget(f"t{index}", f"job-t{index}", "demo-project", "us-east4")
+        for index in range(terminal)
+    ]
+
+
+def test_active_targets_beyond_one_page_are_not_starved() -> None:
+    """Thirty running jobs must all be observed, not the same first page."""
+    collector = BatchCollector(FakeGcpClient(jobs={}), lambda: targets(30), max_targets=25)
+    cursor: dict = {}
+    seen: list[str] = []
+    for _ in range(2):
+        batch = collector.collect(cursor)
+        cursor = dict(batch.cursor)
+        seen.extend(gap.detail for gap in batch.gaps)
+    selected = {detail.split("Galaxy job ")[-1].rstrip(".") for detail in seen}
+    assert selected == {f"a{index}" for index in range(30)}
+
+
+def test_a_page_of_active_work_is_drained_before_the_next_interval() -> None:
+    collector = BatchCollector(FakeGcpClient(jobs={}), lambda: targets(30), max_targets=25)
+    first = collector.collect({})
+    assert first.exhausted is False
+    second = collector.collect(first.cursor)
+    assert second.exhausted is True
+
+
+def test_terminal_reconciliation_keeps_capacity_under_sustained_load() -> None:
+    collector = BatchCollector(
+        FakeGcpClient(jobs={}), lambda: targets(100, terminal=10), max_targets=25
+    )
     batch = collector.collect({})
-    assert {attempt.job_source_id for attempt in batch.attempts} == {"336"}
-    assert batch.exhausted is False
+    observed = {detail.split("Galaxy job ")[-1].rstrip(".") for detail in
+                (gap.detail for gap in batch.gaps)}
+    assert any(name.startswith("t") for name in observed)
+    assert sum(1 for name in observed if name.startswith("a")) >= 20
+
+
+def test_target_cursors_survive_restart_and_shrinking_lists() -> None:
+    collector = BatchCollector(FakeGcpClient(jobs={}), lambda: targets(30), max_targets=25)
+    first = collector.collect({})
+    # A restarted collector resumes from the persisted cursor.
+    resumed = BatchCollector(FakeGcpClient(jobs={}), lambda: targets(30), max_targets=25)
+    second = resumed.collect(first.cursor)
+    assert second.cursor["active_offset"] == 0
+    # Targets disappearing between cycles must not skip the remaining ones.
+    shrunk = BatchCollector(FakeGcpClient(jobs={}), lambda: targets(3), max_targets=25)
+    batch = shrunk.collect({"active_offset": 27, "terminal_offset": 0})
+    observed = {gap.detail.split("Galaxy job ")[-1].rstrip(".") for gap in batch.gaps}
+    assert observed == {"a0", "a1", "a2"}

@@ -24,7 +24,7 @@ from rainstone.auth import Identity, current_identity
 from rainstone.catalog import coverage as catalog_coverage
 from rainstone.config import Settings, get_settings
 from rainstone.db import get_session
-from rainstone.doctor import run_checks
+from rainstone.doctor import readiness, run_checks
 from rainstone.report_query import ReportQuery, report_query
 from rainstone.reporting import (
     daily,
@@ -46,7 +46,21 @@ router = APIRouter(prefix="/api")
 
 @router.get("/health")
 def health() -> dict:
+    """Process liveness only: it must not depend on external services."""
     return {"status": "ok"}
+
+
+@router.get("/ready")
+def ready(
+    response: Response,
+    session: Session = Depends(get_session),
+    settings: Settings = Depends(get_settings),
+) -> dict:
+    """Readiness: serve reports only against a migrated, enrolled instance."""
+    state = readiness(session, settings)
+    if not state["ready"]:
+        response.status_code = 503
+    return state
 
 
 @router.get("/me", response_model=MeResponse)
@@ -72,10 +86,14 @@ def status(
     identity: Identity = Depends(current_identity),
     settings: Settings = Depends(get_settings),
 ) -> dict:
-    """Sanitized operational diagnostics: no DSNs, secrets or raw job data."""
+    """Sanitized operational diagnostics: no DSNs, secrets or raw job data.
+
+    Source and cloud findings come from the collector's and bootstrap's recorded
+    reports, because this process deliberately holds none of those credentials.
+    """
     if not settings.diagnostics_enabled:
         raise HTTPException(404, "Diagnostics are disabled for this deployment")
-    return run_checks(session, settings)
+    return run_checks(session, settings, context="web")
 
 
 @router.get("/status/download")
@@ -86,7 +104,9 @@ def status_download(
 ) -> Response:
     if not settings.diagnostics_enabled:
         raise HTTPException(404, "Diagnostics are disabled for this deployment")
-    payload = json.dumps(run_checks(session, settings), indent=2, sort_keys=True, default=str)
+    payload = json.dumps(
+        run_checks(session, settings, context="web"), indent=2, sort_keys=True, default=str
+    )
     return Response(
         payload,
         media_type="application/json",

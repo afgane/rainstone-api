@@ -43,6 +43,27 @@ def main() -> None:
     boot.add_argument("--rotate", action="store_true", help="Rotate the reader credential")
     boot.add_argument("--write-dsn", type=Path, default=None, help="Write the scoped reader DSN here")
     boot.add_argument("--descriptor", type=Path, default=None, help="JSON deployment descriptor")
+    boot.add_argument(
+        "--replace-source",
+        action="store_true",
+        help="Enroll a different source database for this instance, discarding the old binding",
+    )
+    boot.add_argument(
+        "--write-secret",
+        default=None,
+        help="Kubernetes Secret to receive the scoped reader DSN, as name[/key]",
+    )
+
+    ready = commands.add_parser(
+        "wait-ready", help="Block until migrations and instance enrollment are complete"
+    )
+    ready.add_argument("--timeout", type=int, default=600)
+    ready.add_argument("--interval", type=int, default=5)
+
+    heartbeat = commands.add_parser(
+        "heartbeat", help="Check that the collector loop wrote a recent heartbeat"
+    )
+    heartbeat.add_argument("--max-age", type=int, default=300)
 
     doctor = commands.add_parser("doctor", help="Run read-only self-checks")
     doctor.add_argument("--json", action="store_true", help="Emit JSON (default)")
@@ -91,39 +112,102 @@ def main() -> None:
                 rotate=args.rotate,
                 dsn_output=args.write_dsn,
                 descriptor=descriptor,
+                replace_source=args.replace_source,
+                secret_target=args.write_secret,
             )
         )
         return
 
-    if args.command == "doctor":
-        from rainstone.doctor import run_checks
+    if args.command == "wait-ready":
+        import time
 
+        from rainstone.doctor import readiness
+
+        deadline = time.monotonic() + args.timeout
+        while True:
+            with Session(engine) as session:
+                state = readiness(session)
+            if state["ready"]:
+                _print({"ready": True, **state["facts"]})
+                return
+            if time.monotonic() >= deadline:
+                _print({"ready": False, "reasons": state["reasons"]})
+                sys.exit(1)
+            print(
+                json.dumps({"waiting_for": state["reasons"]}, sort_keys=True),
+                file=sys.stderr,
+                flush=True,
+            )
+            time.sleep(args.interval)
+
+    if args.command == "heartbeat":
+        import time
+
+        from rainstone.config import get_settings
+
+        path = get_settings().collector_heartbeat_path
+        if not path.exists():
+            _print({"alive": False, "reason": "no heartbeat has been written yet"})
+            sys.exit(1)
+        age = time.time() - path.stat().st_mtime
+        alive = age <= args.max_age
+        _print({"alive": alive, "age_seconds": round(age, 1)})
+        sys.exit(0 if alive else 1)
+
+    if args.command == "doctor":
+        from rainstone.config import get_settings as _settings
+        from rainstone.doctor import record_report, run_checks
+        from rainstone.ingestion import stable_id
+
+        settings = _settings()
         with Session(engine) as session:
-            report = run_checks(session)
+            report = run_checks(session, settings, context="collector")
+            try:
+                record_report(session, stable_id("tenant", settings.tenant_slug), report)
+                session.commit()
+            except Exception:  # noqa: BLE001 - reporting must not mask findings
+                session.rollback()
         _print(report)
         sys.exit(1 if report["overall_status"] == "fail" else 0)
 
     if args.command in {"catalog", "validate-catalog"}:
-        from rainstone.catalog import CatalogError, coverage, load_file, refresh
+        from rainstone.catalog import (
+            CatalogError,
+            coverage,
+            load_file,
+            parse_trusted_keys,
+            refresh,
+        )
         from rainstone.catalog import import_catalog as import_artifact
         from rainstone.config import get_settings
 
         settings = get_settings()
         action = "validate" if args.command == "validate-catalog" else args.catalog_command
         try:
+            trusted = parse_trusted_keys(settings.catalog_trusted_keys)
             if action == "validate":
-                catalog = load_file(args.path, require_signature=settings.catalog_require_signature)
+                catalog = load_file(
+                    args.path,
+                    require_signature=settings.catalog_require_signature,
+                    trusted_keys=trusted,
+                )
                 _print(
                     {
                         "catalog_id": catalog.catalog_id,
                         "rates": len(catalog.rates),
                         "digest": catalog.digest,
+                        "signature_verified": catalog.signature_verified,
+                        "signature_key_id": catalog.signature_key_id,
                         "valid": True,
                     }
                 )
                 return
             if action == "import":
-                catalog = load_file(args.path, require_signature=settings.catalog_require_signature)
+                catalog = load_file(
+                    args.path,
+                    require_signature=settings.catalog_require_signature,
+                    trusted_keys=trusted,
+                )
                 with Session(engine) as session:
                     result = import_artifact(session, catalog)
                     session.commit()
@@ -137,6 +221,7 @@ def main() -> None:
                             url=settings.catalog_feed_url,
                             bundled_path=settings.catalog_path,
                             require_signature=settings.catalog_require_signature,
+                            trusted_keys=trusted,
                         )
                     )
                 return

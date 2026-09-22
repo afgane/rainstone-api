@@ -223,6 +223,7 @@ class StatusResponse(APIModel):
     tenant: str
     checks: list[StatusCheck]
     failed_capabilities: list[str]
+    recorded_reports: list[dict[str, Any]] = []
 
 
 class CatalogResponse(APIModel):
@@ -230,5 +231,6 @@ class CatalogResponse(APIModel):
     observed_at: str | None
     imported_at: str | None
     signature_key_id: str | None
+    signature_verified: bool = False
     provenance: dict[str, Any]
     supported: list[dict[str, Any]]

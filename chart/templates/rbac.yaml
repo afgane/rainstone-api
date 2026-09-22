@@ -1,15 +1,79 @@
-{{- if .Values.serviceAccount.create }}
+{{/*
+Separate identities with separate permissions:
+
+- web serves reports and is bound to nothing;
+- collector observes pods, batch jobs and nodes;
+- initialization may write only the source credential Secret it provisions.
+
+A Workload Identity binding belongs on the collector (and initialization) alone.
+On a node whose metadata server is reachable from any pod, that node-wide
+credential remains available regardless of Kubernetes service accounts; treat
+metadata-server restriction as a deployment prerequisite rather than something
+this chart can enforce.
+*/}}
+{{- if .Values.serviceAccounts.create }}
+{{- range $component := list "web" "collector" "init" }}
+{{- $config := index $.Values.serviceAccounts $component }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: {{ include "rainstone.serviceAccountName" . }}
-  labels: {{- include "rainstone.labels" . | nindent 4 }}
-  {{- with .Values.serviceAccount.annotations }}
+  name: {{ include "rainstone.serviceAccountName" (list $ $component) }}
+  labels: {{- include "rainstone.labels" $ | nindent 4 }}
+  {{- if eq $component "init" }}
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "-20"
+    helm.sh/hook-delete-policy: before-hook-creation
+    {{- with $config.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- else }}
+  {{- with $config.annotations }}
   annotations: {{- toYaml . | nindent 4 }}
   {{- end }}
+  {{- end }}
+---
+{{- end }}
+{{- end }}
+{{- if .Values.source.adminSecret }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "rainstone.fullname" . }}-init
+  labels: {{- include "rainstone.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "-20"
+    helm.sh/hook-delete-policy: before-hook-creation
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: [{{ include "rainstone.sourceSecret" . | quote }}]
+    verbs: ["get", "patch", "update"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "rainstone.fullname" . }}-init
+  labels: {{- include "rainstone.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "-20"
+    helm.sh/hook-delete-policy: before-hook-creation
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "rainstone.fullname" . }}-init
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "rainstone.serviceAccountName" (list . "init") }}
+    namespace: {{ .Release.Namespace }}
+---
 {{- end }}
 {{- if and .Values.collector.enabled .Values.collector.kubernetes.enabled }}
----
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -37,7 +101,7 @@ roleRef:
   name: {{ include "rainstone.fullname" . }}-observer
 subjects:
   - kind: ServiceAccount
-    name: {{ include "rainstone.serviceAccountName" . }}
+    name: {{ include "rainstone.serviceAccountName" (list . "collector") }}
     namespace: {{ .Release.Namespace }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -62,6 +126,6 @@ roleRef:
   name: {{ include "rainstone.fullname" . }}-nodes
 subjects:
   - kind: ServiceAccount
-    name: {{ include "rainstone.serviceAccountName" . }}
+    name: {{ include "rainstone.serviceAccountName" (list . "collector") }}
     namespace: {{ .Release.Namespace }}
 {{- end }}

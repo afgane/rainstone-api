@@ -16,10 +16,19 @@ spec:
         {{- include "rainstone.labels" . | nindent 8 }}
         app.kubernetes.io/component: web
     spec:
-      serviceAccountName: {{ include "rainstone.serviceAccountName" . }}
+      serviceAccountName: {{ include "rainstone.serviceAccountName" (list . "web") }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
+      initContainers:
+        # No pod serves reports before the schema and instance enrolment this
+        # release expects are in place.
+        - name: wait-ready
+          image: {{ include "rainstone.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["rainstone", "wait-ready", "--timeout", "900"]
+          env: {{- include "rainstone.env" . | nindent 12 }}
+          resources: {{- toYaml .Values.web.resources | nindent 12 }}
       containers:
         - name: web
           image: {{ include "rainstone.image" . }}
@@ -37,8 +46,11 @@ spec:
           ports:
             - name: http
               containerPort: 8000
+          # Readiness reflects a compatible schema and a resolved fixed scope;
+          # liveness stays a cheap process check so dependency problems do not
+          # restart a healthy process.
           readinessProbe:
-            httpGet: {path: /api/health, port: http}
+            httpGet: {path: /api/ready, port: http}
             initialDelaySeconds: 3
             periodSeconds: 10
           livenessProbe:

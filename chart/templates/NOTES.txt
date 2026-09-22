@@ -10,13 +10,17 @@ Every request reports the fixed shared Galaxy account
 Attribution is to that account, not to individual workspace members.
 {{- end }}
 
-{{- if not .Values.source.dsnSecret }}
-No Galaxy source credential is configured yet, so nothing will be collected. Run:
-
-  rainstone bootstrap --admin-database-url <installation DSN> \
-      --shared-account <galaxy account> --write-dsn /secrets/dsn
-
-and set `source.dsnSecret` to the Secret holding that DSN.
+{{- if .Values.source.adminSecret }}
+Initialization runs automatically on install and upgrade: it migrates the
+database, provisions the scoped Galaxy reader, enrolls this source's identity,
+writes the reader DSN into {{ include "rainstone.sourceSecret" . }}, imports the
+price catalog and records a self-check. Application pods wait for that sequence
+before they serve.
+{{- else }}
+No `source.adminSecret` is configured, so no Galaxy source is enrolled and
+nothing will be collected. Supply a Secret holding an installation-time DSN and
+set `source.sharedAccount`; the application itself never receives that
+credential.
 {{- end }}
 
 Check the deployment with `rainstone doctor` in the collector pod, or open

@@ -53,9 +53,11 @@ class Tenant(Base):
 class SourceBinding(Base):
     """Binds a tenant's seeded instance identity to one source database.
 
-    A replaced Galaxy database must not inherit an old instance identity only
-    because the VM or Helm release name was reused, so the collector refuses to
-    run when the recorded source fingerprint no longer matches.
+    Identity is the source-lifetime identifier enrolled in the source database
+    itself, not a schema hash or a release name: column-level grants change what
+    a reader can see, and two unrelated databases can share a schema. A replaced
+    Galaxy database is refused until it is explicitly enrolled, so it cannot
+    inherit an old instance identity and its job IDs.
     """
 
     __tablename__ = "source_binding"
@@ -65,10 +67,13 @@ class SourceBinding(Base):
     )
     instance_uuid: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), unique=True)
     source_kind: Mapped[str] = mapped_column(String(40))
-    source_fingerprint: Mapped[str] = mapped_column(String(200))
+    source_identity: Mapped[str] = mapped_column(String(64))
+    # Schema capability, recorded for diagnostics; never used as identity.
+    schema_fingerprint: Mapped[str | None] = mapped_column(String(200))
     source_version: Mapped[str | None] = mapped_column(String(100))
     descriptor: Mapped[dict] = mapped_column(JSON, default=dict)
     bound_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    enrolled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class ReportGeneration(Base):
@@ -217,6 +222,7 @@ class CatalogVersion(Base):
     source: Mapped[str] = mapped_column(String(500))
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     imported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    signature_verified: Mapped[bool] = mapped_column(Boolean, default=False)
     active: Mapped[bool] = mapped_column(Boolean, default=False)
     rate_count: Mapped[int] = mapped_column(Integer, default=0)
     provenance: Mapped[dict] = mapped_column(JSON, default=dict)
@@ -386,6 +392,24 @@ class IngestionState(Base):
     metrics: Mapped[dict] = mapped_column(JSON, default=dict)
     error: Mapped[str | None] = mapped_column(Text)
     __table_args__ = (UniqueConstraint("tenant_id", "source"),)
+
+
+class CapabilityReport(Base):
+    """Self-check results recorded by the process that can actually run them.
+
+    The web process holds no source or cloud credentials, so it reports the
+    collector's and bootstrap's findings with their own timestamps instead of
+    re-running probes it would always skip.
+    """
+
+    __tablename__ = "capability_report"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenant.id", ondelete="CASCADE"))
+    context: Mapped[str] = mapped_column(String(40))
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    overall_status: Mapped[str] = mapped_column(String(20))
+    report: Mapped[dict] = mapped_column(JSON, default=dict)
+    __table_args__ = (UniqueConstraint("tenant_id", "context"),)
 
 
 class ObservationGap(Base):

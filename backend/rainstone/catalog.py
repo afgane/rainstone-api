@@ -6,10 +6,19 @@ refresh leaves the last known good catalog in place, so reporting keeps working
 without network access. A pinned historical snapshot is honest about not being
 current pricing: its provenance travels into every calculation.
 
+An artifact downloaded from a feed is untrusted until an Ed25519 signature over
+its canonical content verifies against a release-pinned public key. Several keys
+may be trusted at once, which is how key rotation works: publish with the new
+key while the old one is still trusted, then drop the old key. A self-declared
+digest inside the artifact is an integrity aid only and never establishes
+authenticity, because an attacker controls both the content and that digest.
+
 Producing artifacts requires maintainer-side pricing access and is a release
 function, not a per-installation credentialed dependency.
 """
 
+import base64
+import binascii
 import hashlib
 import json
 import urllib.request
@@ -35,6 +44,51 @@ class CatalogError(ValueError):
     """The artifact cannot be trusted and must not replace a good catalog."""
 
 
+def parse_trusted_keys(configured: str) -> dict[str, bytes]:
+    """Read `key_id:base64-public-key` pairs pinned by the release or operator."""
+    trusted: dict[str, bytes] = {}
+    for entry in configured.split(","):
+        item = entry.strip()
+        if not item:
+            continue
+        key_id, _, encoded = item.partition(":")
+        if not key_id or not encoded:
+            raise CatalogError(f"trusted catalog key must be 'key_id:base64': {item}")
+        try:
+            material = base64.b64decode(encoded, validate=True)
+        except binascii.Error as error:
+            raise CatalogError(f"trusted catalog key {key_id} is not valid base64") from error
+        if len(material) != 32:
+            raise CatalogError(f"trusted catalog key {key_id} is not an Ed25519 public key")
+        trusted[key_id.strip()] = material
+    return trusted
+
+
+def verify_signature(content: bytes, signature: dict, trusted: dict[str, bytes]) -> str:
+    """Verify an Ed25519 signature over canonical content; return the key ID."""
+    from cryptography.exceptions import InvalidSignature
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+    key_id = signature.get("key_id")
+    encoded = signature.get("signature")
+    if not key_id or not encoded:
+        raise CatalogError("catalog signature must name a key_id and carry a signature")
+    if signature.get("algorithm", "ed25519") != "ed25519":
+        raise CatalogError(f"unsupported catalog signature algorithm: {signature['algorithm']}")
+    material = trusted.get(key_id)
+    if material is None:
+        raise CatalogError(f"catalog is signed by untrusted key {key_id}")
+    try:
+        raw = base64.b64decode(encoded, validate=True)
+    except binascii.Error as error:
+        raise CatalogError("catalog signature is not valid base64") from error
+    try:
+        Ed25519PublicKey.from_public_bytes(material).verify(raw, content)
+    except InvalidSignature as error:
+        raise CatalogError(f"catalog signature does not verify against key {key_id}") from error
+    return key_id
+
+
 @dataclass(frozen=True)
 class ValidatedCatalog:
     catalog_id: str
@@ -45,6 +99,7 @@ class ValidatedCatalog:
     rates: tuple[dict, ...]
     source: str
     signature_key_id: str | None = None
+    signature_verified: bool = False
     provenance: dict = field(default_factory=dict)
 
 
@@ -52,7 +107,19 @@ def _digest(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def validate(payload: bytes, *, source: str, require_signature: bool = False) -> ValidatedCatalog:
+def canonical_content(data: dict) -> bytes:
+    """The bytes a publisher signs: the artifact without its signature block."""
+    content = {key: value for key, value in data.items() if key != "signature"}
+    return json.dumps(content, sort_keys=True, separators=(",", ":")).encode()
+
+
+def validate(
+    payload: bytes,
+    *,
+    source: str,
+    require_signature: bool = False,
+    trusted_keys: dict[str, bytes] | None = None,
+) -> ValidatedCatalog:
     try:
         data = json.loads(payload)
     except json.JSONDecodeError as error:
@@ -67,8 +134,6 @@ def validate(payload: bytes, *, source: str, require_signature: bool = False) ->
     if data["currency"] not in SUPPORTED_CURRENCIES:
         raise CatalogError(f"unsupported catalog currency: {data['currency']}")
     signature = data.get("signature") or {}
-    if require_signature and not signature.get("key_id"):
-        raise CatalogError("catalog signature is required but absent")
     declared = signature.get("content_digest")
     keys: set[tuple[str, str, str, str]] = set()
     for rate in data["rates"]:
@@ -84,12 +149,20 @@ def validate(payload: bytes, *, source: str, require_signature: bool = False) ->
         if key in keys:
             raise CatalogError(f"catalog contains duplicate resolver key: {key}")
         keys.add(key)
-    content = {key: value for key, value in data.items() if key != "signature"}
-    content_digest = _digest(
-        json.dumps(content, sort_keys=True, separators=(",", ":")).encode()
-    )
+    content = canonical_content(data)
+    content_digest = _digest(content)
     if declared and declared != content_digest:
-        raise CatalogError("catalog signature digest does not match its content")
+        raise CatalogError("catalog digest does not match its content")
+    trusted = trusted_keys or {}
+    verified_key: str | None = None
+    if signature:
+        if not trusted:
+            raise CatalogError(
+                "catalog carries a signature but this deployment pins no trusted keys"
+            )
+        verified_key = verify_signature(content, signature, trusted)
+    if require_signature and verified_key is None:
+        raise CatalogError("a verified catalog signature is required but absent")
     return ValidatedCatalog(
         catalog_id=data["catalog_id"],
         schema_version=int(data["schema_version"]),
@@ -98,7 +171,8 @@ def validate(payload: bytes, *, source: str, require_signature: bool = False) ->
         currency=data["currency"],
         rates=tuple(data["rates"]),
         source=source,
-        signature_key_id=signature.get("key_id"),
+        signature_key_id=verified_key,
+        signature_verified=verified_key is not None,
         provenance={
             "source_urls": data["source_urls"],
             "kind": data.get("kind", "published_snapshot"),
@@ -107,20 +181,40 @@ def validate(payload: bytes, *, source: str, require_signature: bool = False) ->
             ),
             "notes": data.get("notes"),
             "artifact_digest": _digest(payload),
+            "signature_verified": verified_key is not None,
+            "signature_key_id": verified_key,
         },
     )
 
 
-def load_file(path: Path, *, require_signature: bool = False) -> ValidatedCatalog:
-    return validate(path.read_bytes(), source=str(path), require_signature=require_signature)
+def load_file(
+    path: Path,
+    *,
+    require_signature: bool = False,
+    trusted_keys: dict[str, bytes] | None = None,
+) -> ValidatedCatalog:
+    return validate(
+        path.read_bytes(),
+        source=str(path),
+        require_signature=require_signature,
+        trusted_keys=trusted_keys,
+    )
 
 
-def fetch(url: str, *, timeout: int = 30, require_signature: bool = False) -> ValidatedCatalog:
+def fetch(
+    url: str,
+    *,
+    timeout: int = 30,
+    require_signature: bool = False,
+    trusted_keys: dict[str, bytes] | None = None,
+) -> ValidatedCatalog:
     """Anonymous download; no account, key or subscription is used."""
     request = urllib.request.Request(url, headers={"Accept": "application/json"})
     with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
         payload = response.read()
-    return validate(payload, source=url, require_signature=require_signature)
+    return validate(
+        payload, source=url, require_signature=require_signature, trusted_keys=trusted_keys
+    )
 
 
 def active_catalog(session: Session) -> CatalogVersion | None:
@@ -168,6 +262,7 @@ def import_catalog(session: Session, catalog: ValidatedCatalog) -> dict:
     version.schema_version = catalog.schema_version
     version.artifact_digest = catalog.digest
     version.signature_key_id = catalog.signature_key_id
+    version.signature_verified = catalog.signature_verified
     version.source = catalog.source[:500]
     version.observed_at = catalog.observed_at
     version.imported_at = now
@@ -195,12 +290,19 @@ def refresh(
     url: str | None,
     bundled_path: Path | None = None,
     require_signature: bool = False,
+    trusted_keys: dict[str, bytes] | None = None,
 ) -> dict:
-    """Try the feed; fall back to the last known good or bundled catalog."""
+    """Try the feed; fall back to the last known good or bundled catalog.
+
+    A downloaded artifact that fails verification never replaces a catalog that
+    already works.
+    """
     current = active_catalog(session)
     if url:
         try:
-            catalog = fetch(url, require_signature=require_signature)
+            catalog = fetch(
+                url, require_signature=require_signature, trusted_keys=trusted_keys
+            )
             result = import_catalog(session, catalog)
             session.commit()
             return {**result, "status": "refreshed"}
@@ -218,7 +320,9 @@ def refresh(
         return {"status": "current", "catalog_id": current.catalog_id}
     if bundled_path is None:
         return {"status": "unavailable", "error": "no catalog source is configured"}
-    catalog = load_file(bundled_path, require_signature=require_signature)
+    # The bundled artifact ships inside the release image, so it is trusted by
+    # provenance rather than by a feed signature.
+    catalog = load_file(bundled_path, trusted_keys=trusted_keys)
     result = import_catalog(session, catalog)
     session.commit()
     return {**result, "status": "bundled"}
@@ -241,6 +345,7 @@ def coverage(session: Session) -> dict:
         "observed_at": version.observed_at.isoformat() if version else None,
         "imported_at": version.imported_at.isoformat() if version else None,
         "signature_key_id": version.signature_key_id if version else None,
+        "signature_verified": bool(version.signature_verified) if version else False,
         "provenance": version.provenance if version else {},
         "supported": [
             {

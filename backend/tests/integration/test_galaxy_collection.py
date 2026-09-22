@@ -483,33 +483,123 @@ def test_provider_retry_charges_one_shared_vm_lifetime(source_engine) -> None:
         assert job.state == "error"
 
 
-def test_source_binding_refuses_a_replaced_source_database(source_engine) -> None:
-    from rainstone.bootstrap import seed_instance
+def test_identity_follows_the_source_database_not_its_schema(source_engine) -> None:
+    """Bootstrap and collection must agree about the same database.
+
+    The administrator and the column-restricted reader see different columns,
+    so a schema hash cannot decide identity; the enrolled identifier can.
+    """
+    from rainstone.adapters.galaxy_db import read_source_identity
+    from rainstone.bootstrap import enroll_source_identity, provision_reader, reader_dsn, seed_instance
     from rainstone.collector import SourceBindingMismatch, ensure_binding
 
+    role = "rainstone_identity_reader"
+    password = "ffffGGGG2222-_test"
+
+    def remove_role() -> None:
+        with engine.begin() as connection:
+            if connection.execute(
+                text("SELECT 1 FROM pg_roles WHERE rolname = :role"), {"role": role}
+            ).scalar():
+                connection.execute(text(f'DROP OWNED BY "{role}" CASCADE'))
+                connection.execute(text(f'DROP ROLE "{role}"'))
+
+    remove_role()
     settings = Settings(
-        auth_mode="development", demo_data=True, tenant_slug=f"binding-{uuid.uuid4().hex[:8]}"
+        auth_mode="development", demo_data=True, tenant_slug=f"identity-{uuid.uuid4().hex[:8]}"
+    )
+    with engine.begin() as connection:
+        # Start from an unenrolled source so first enrolment is exercised.
+        connection.execute(text("DROP SCHEMA IF EXISTS rainstone CASCADE"))
+    try:
+        with source_engine.begin() as connection:
+            database = connection.execute(text("SELECT current_database()")).scalar()
+            provision_reader(
+                connection, role=role, password=password, database=database,
+                schema=SCHEMA, rotate=True,
+            )
+            identity, created = enroll_source_identity(connection, role=role)
+        assert created is True
+        with source_engine.begin() as connection:
+            again, created_again = enroll_source_identity(connection, role=role)
+        assert (again, created_again) == (identity, False)
+
+        admin_capabilities = discover_capabilities(source_engine)
+        reader = create_engine(
+            reader_dsn(str(engine.url.render_as_string(hide_password=False)), role, password),
+            connect_args={"options": f"-csearch_path={SCHEMA}"},
+        )
+        reader_capabilities = discover_capabilities(reader)
+        # The reader legitimately sees fewer columns, and still reads the identity.
+        assert reader_capabilities.schema_fingerprint != admin_capabilities.schema_fingerprint
+        assert read_source_identity(reader) == identity
+        assert reader_capabilities.source_identity == identity
+
+        with Session(engine) as session:
+            seed_instance(
+                session, settings, admin_capabilities,
+                owner_source_id="1", owner_label="researcher",
+                descriptor={}, source_identity=identity,
+            )
+            # Collection uses the restricted reader's view and still matches.
+            ensure_binding(
+                session,
+                settings,
+                source_identity=reader_capabilities.source_identity,
+                schema_fingerprint=reader_capabilities.schema_fingerprint,
+                version=reader_capabilities.source_version,
+            )
+            # A different database with an identical schema is refused.
+            with pytest.raises(SourceBindingMismatch, match="not the source this instance"):
+                ensure_binding(session, settings, source_identity=str(uuid.uuid4()))
+        reader.dispose()
+    finally:
+        remove_role()
+        with Session(engine) as session:
+            tenant = session.get(Tenant, stable_id("tenant", settings.tenant_slug))
+            if tenant is not None:
+                session.delete(tenant)
+                session.commit()
+
+
+def test_a_replacement_source_is_only_adopted_when_enrolled_deliberately(source_engine) -> None:
+    from rainstone.bootstrap import seed_instance
+
+    settings = Settings(
+        auth_mode="development", demo_data=True, tenant_slug=f"replace-{uuid.uuid4().hex[:8]}"
     )
     capabilities = discover_capabilities(source_engine)
-    with Session(engine) as session:
-        seed_instance(
-            session,
-            settings,
-            capabilities,
-            owner_source_id="1",
-            owner_label="researcher",
-            descriptor={"machine_type": "t2d-standard-4"},
-        )
-        ensure_binding(session, settings, capabilities.schema_fingerprint, capabilities.source_version)
-        with pytest.raises(SourceBindingMismatch):
-            ensure_binding(session, settings, "a-different-schema-fingerprint", None)
+    original, replacement = str(uuid.uuid4()), str(uuid.uuid4())
+    try:
+        with Session(engine) as session:
+            seed_instance(
+                session, settings, capabilities, owner_source_id="1", owner_label="researcher",
+                descriptor={}, source_identity=original,
+            )
+            with pytest.raises(RuntimeError, match="--replace-source"):
+                seed_instance(
+                    session, settings, capabilities, owner_source_id="1",
+                    owner_label="researcher", descriptor={}, source_identity=replacement,
+                )
+            session.rollback()
+            result = seed_instance(
+                session, settings, capabilities, owner_source_id="1", owner_label="researcher",
+                descriptor={}, source_identity=replacement, replace_source=True,
+            )
+            assert result["source_identity"] == replacement
+    finally:
+        with Session(engine) as session:
+            tenant = session.get(Tenant, stable_id("tenant", settings.tenant_slug))
+            if tenant is not None:
+                session.delete(tenant)
+                session.commit()
 
 
 def test_provisioned_reader_role_has_least_privilege_reads(source_engine) -> None:
     """The scoped role reads allowlisted columns and nothing else."""
     from urllib.parse import quote
 
-    from rainstone.bootstrap import provision_reader, reader_dsn
+    from rainstone.bootstrap import enroll_source_identity, provision_reader, reader_dsn
 
     role = "rainstone_reader_test"
     password = "aaaaBBBB1111-_test"
@@ -535,6 +625,7 @@ def test_provisioned_reader_role_has_least_privilege_reads(source_engine) -> Non
                 schema=SCHEMA,
                 rotate=True,
             )
+            enroll_source_identity(connection, role=role)
         dsn = reader_dsn(str(engine.url.render_as_string(hide_password=False)), role, password)
         assert quote(password, safe="") in dsn
         reader = create_engine(
@@ -544,9 +635,14 @@ def test_provisioned_reader_role_has_least_privilege_reads(source_engine) -> Non
             assert connection.execute(text("SELECT count(*) FROM job")).scalar() > 0
             # The late-membership test adds a third mapped job earlier in this
             # module, so only the presence of the association matters here.
+            # The late-membership test adds a third mapped job earlier in this
+            # module, so only the presence of the association matters here.
             assert connection.execute(
                 text("SELECT count(*) FROM implicit_collection_jobs_job_association")
             ).scalar() >= 2
+            assert connection.execute(
+                text("SELECT count(*) FROM rainstone.source_identity")
+            ).scalar() == 1
             for forbidden in (
                 "SELECT command_line FROM job LIMIT 1",
                 "SELECT password FROM galaxy_user LIMIT 1",

@@ -43,10 +43,17 @@ database:
   user: rainstone
   passwordSecret: ""            # Secret with key `password`; generated when empty
 
-# Read-only Galaxy source credential provisioned by `rainstone bootstrap`.
+# Galaxy source access. Initialization uses `adminSecret` once, with
+# installation-time privileges, to provision a scoped reader, enroll this
+# source's identity, and write the reader DSN into `dsnSecret`. The application
+# only ever receives `dsnSecret`.
 source:
-  dsnSecret: ""                 # Secret with key `dsn`
+  adminSecret: ""               # Secret with key `dsn`; used only by initialization
+  adminSecretKey: dsn
+  dsnSecret: ""                 # defaults to <release>-source, written by initialization
   dsnSecretKey: dsn
+  sharedAccount: ""             # Galaxy account this deployment reports on
+  replaceSource: false          # enroll a different source database deliberately
   statementTimeout: 30s
   batchSize: 500
   replayOverlapSeconds: 300
@@ -78,6 +85,9 @@ baseline:
 catalog:
   feedUrl: ""                   # anonymous, versioned artifact feed
   refreshSeconds: 21600
+  # `key_id:base64-ed25519-public-key` pairs. A feed artifact is untrusted until
+  # it verifies against one of these; listing two is how a key is rotated.
+  trustedKeys: ""
   requireSignature: false
 
 retentionDays: 0                # 0 keeps all collected history
@@ -94,10 +104,22 @@ collectorResources:
   requests: {cpu: 100m, memory: 256Mi}
   limits: {cpu: "1", memory: 1Gi}
 
-serviceAccount:
+# Separate identities: the web process must not hold observation or cloud
+# permissions. Note that Workload Identity bindings belong on the collector and
+# initialization accounts only; on a node whose metadata server is reachable by
+# any pod, that node-wide credential is a deployment-level limitation these
+# accounts cannot remove.
+serviceAccounts:
   create: true
-  name: ""
-  annotations: {}               # workload identity annotation for cloud reads
+  web:
+    name: ""
+    annotations: {}
+  collector:
+    name: ""
+    annotations: {}             # workload identity annotation for cloud reads
+  init:
+    name: ""
+    annotations: {}
 
 # In-cluster restriction only: it reduces in-cluster callers and is not a
 # substitute for the platform's external admission boundary.

@@ -58,14 +58,17 @@ class Settings(BaseSettings):
     collect_max_backoff_seconds: int = 300
     collector_lease_key: str = "rainstone-collector"
 
-    # Price catalog.
+    # Price catalog. Trusted keys are `key_id:base64-ed25519-public-key` pairs;
+    # listing several at once is how key rotation works.
     catalog_path: Path = Path("catalog/gcp-us-central1-2026-09-19.json")
     catalog_feed_url: str | None = None
     catalog_refresh_seconds: int = 21600
-    catalog_public_key_digest: str | None = None
+    catalog_trusted_keys: str = ""
     catalog_require_signature: bool = False
 
     diagnostics_enabled: bool = True
+    diagnostics_interval_seconds: int = 300
+    collector_heartbeat_path: Path = Path("/tmp/rainstone-collector.heartbeat")  # noqa: S108
 
     @property
     def baseline_destination_list(self) -> tuple[str, ...]:
@@ -101,6 +104,16 @@ class Settings(BaseSettings):
             )
         if self.baseline_policy_version and not self.baseline_resource_uid:
             raise ValueError("A baseline policy requires RAINSTONE_BASELINE_RESOURCE_UID")
+        if self.catalog_require_signature and not self.catalog_trusted_keys:
+            raise ValueError(
+                "RAINSTONE_CATALOG_REQUIRE_SIGNATURE needs RAINSTONE_CATALOG_TRUSTED_KEYS; "
+                "a signature cannot be verified without a pinned public key"
+            )
+        if self.catalog_feed_url and not self.catalog_trusted_keys:
+            raise ValueError(
+                "a catalog feed needs RAINSTONE_CATALOG_TRUSTED_KEYS: downloaded artifacts are "
+                "untrusted until their signature verifies"
+            )
         return self
 
 

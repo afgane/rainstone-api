@@ -53,6 +53,8 @@ The release image exposes one CLI, a web process, and a collector process:
 rainstone ingest-fixtures --path fixtures/phase1.json
 rainstone collect [--cycles N]
 rainstone bootstrap --admin-database-url … --shared-account … --write-dsn …
+rainstone wait-ready [--timeout 600]
+rainstone heartbeat [--max-age 300]
 rainstone doctor
 rainstone catalog validate|import|refresh|coverage [--path …]
 uvicorn rainstone.main:app --host 0.0.0.0 --port 8000
@@ -98,6 +100,9 @@ export query applies the resolved tenant and owner scope on the backend.
   minimum applied once to that lifetime. Retries that reuse one VM share that
   charge instead of repeating it; work shared by two Galaxy jobs becomes
   unavailable pending an allocation policy.
+
+Catalog artifacts fetched from a feed are untrusted until an Ed25519 signature
+verifies against a release-pinned key; a feed cannot be configured without one.
 
 The bundled price snapshot was observed on 2026-09-19 from Google's official
 general-purpose VM pricing page, covering `us-central1` only. It has no Catalog

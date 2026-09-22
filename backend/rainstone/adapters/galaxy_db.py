@@ -323,6 +323,17 @@ SETTLED_INVOCATION_STEPS = text("""
 
 VERSION_PROBE = text("SELECT version_num FROM alembic_version LIMIT 1")
 
+# The source-lifetime identifier is enrolled in the source database itself, so
+# it survives upgrades and restores of that database and cannot be confused with
+# a different database that happens to share a schema.
+SOURCE_IDENTITY_SCHEMA = "rainstone"
+SOURCE_IDENTITY_TABLE = "source_identity"
+SOURCE_IDENTITY_PROBE = text(
+    f"SELECT identity::text AS identity, enrolled_at "
+    f"FROM {SOURCE_IDENTITY_SCHEMA}.{SOURCE_IDENTITY_TABLE} "
+    "ORDER BY enrolled_at LIMIT 1"
+)
+
 SCHEMA_PROBE = text("""
     SELECT table_name, column_name
       FROM information_schema.columns
@@ -333,11 +344,61 @@ SCHEMA_PROBE = text("""
 
 @dataclass(frozen=True)
 class GalaxyCapabilities:
+    """What this connection can read. Capability is not identity.
+
+    `schema_fingerprint` reflects the columns *this* role can see, so an
+    administrator and a column-restricted reader legitimately disagree. Use
+    `source_identity` to decide whether two connections describe the same
+    database.
+    """
+
     compatible: bool
     schema_fingerprint: str
     source_version: str | None
+    source_identity: str | None = None
+    identity_status: str = "unknown"
     missing: tuple[str, ...] = ()
     details: dict = field(default_factory=dict)
+
+
+class SourceIdentityUnavailable(RuntimeError):
+    """The source-lifetime identifier could not be read."""
+
+    def __init__(self, status: str, detail: str) -> None:
+        super().__init__(detail)
+        self.status = status
+
+
+def read_source_identity(engine: Engine, *, statement_timeout: str = "30s") -> str:
+    """Read the enrolled source-lifetime identifier with the current role."""
+    with engine.connect() as connection:
+        _read_only(connection, statement_timeout)
+        return _read_source_identity(connection)
+
+
+def _read_source_identity(connection: Connection) -> str:
+    try:
+        row = connection.execute(SOURCE_IDENTITY_PROBE).mappings().first()
+    except Exception as error:  # noqa: BLE001 - classified below for diagnostics
+        message = str(error).lower()
+        if "permission denied" in message:
+            raise SourceIdentityUnavailable(
+                "denied",
+                "the reader role may not read the source identity table; re-run bootstrap "
+                "so it can grant that access",
+            ) from error
+        if "does not exist" in message or "undefined" in message:
+            raise SourceIdentityUnavailable(
+                "absent",
+                "this source database has no enrolled Rainstone identity; run bootstrap "
+                "against it before collecting",
+            ) from error
+        raise SourceIdentityUnavailable("unavailable", str(error)) from error
+    if row is None:
+        raise SourceIdentityUnavailable(
+            "absent", "the source identity table is empty; run bootstrap against this database"
+        )
+    return row["identity"]
 
 
 def _read_only(connection: Connection, statement_timeout: str) -> None:
@@ -353,8 +414,17 @@ def _utc(value: datetime | None) -> datetime | None:
 
 
 def discover_capabilities(engine: Engine, *, statement_timeout: str = "30s") -> GalaxyCapabilities:
+    identity: str | None = None
+    identity_status = "present"
     with engine.connect() as connection:
         _read_only(connection, statement_timeout)
+        try:
+            # A savepoint keeps a missing or forbidden identity table from
+            # aborting the capability probes that follow.
+            with connection.begin_nested():
+                identity = _read_source_identity(connection)
+        except SourceIdentityUnavailable as error:
+            identity_status = error.status
         present: dict[str, set[str]] = {}
         for row in connection.execute(
             SCHEMA_PROBE, {"tables": list(REQUIRED_TABLES)}
@@ -378,6 +448,8 @@ def discover_capabilities(engine: Engine, *, statement_timeout: str = "30s") -> 
         compatible=not missing,
         schema_fingerprint=fingerprint,
         source_version=version,
+        source_identity=identity,
+        identity_status=identity_status,
         missing=tuple(missing),
         details={"tables": {table: sorted(columns) for table, columns in present.items()}},
     )

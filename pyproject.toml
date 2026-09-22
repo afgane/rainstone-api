@@ -9,6 +9,7 @@ description = "Galaxy compute cost reporting"
 requires-python = ">=3.12"
 dependencies = [
   "alembic==1.16.5",
+  "cryptography==46.0.7",
   "fastapi==0.116.1",
   "psycopg[binary]==3.2.10",
   "pydantic-settings==2.10.1",

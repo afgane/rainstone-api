@@ -12,8 +12,9 @@ probe is read-only; submitting synthetic jobs is a separate opt-in development
 action.
 """
 
+import uuid
 from dataclasses import asdict, dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from urllib.parse import urlsplit
 
 from sqlalchemy import create_engine, select, text
@@ -24,6 +25,7 @@ from rainstone.catalog import coverage as catalog_coverage
 from rainstone.config import Settings, get_settings
 from rainstone.costing import CALCULATION_VERSION
 from rainstone.models import (
+    CapabilityReport,
     CostRevision,
     IngestionState,
     ObservationGap,
@@ -159,6 +161,11 @@ def _galaxy_source(settings: Settings) -> list[Check]:
                 f"Galaxy source is unreachable at {endpoint} ({type(error).__name__}).",
             )
         ]
+    identity_detail = {
+        "present": "the enrolled source identity is readable",
+        "absent": "no source identity is enrolled; run bootstrap against this database",
+        "denied": "the reader may not read the source identity; re-run bootstrap",
+    }.get(capabilities.identity_status, capabilities.identity_status)
     return [
         Check(
             "galaxy_source",
@@ -171,7 +178,16 @@ def _galaxy_source(settings: Settings) -> list[Check]:
                 "source_version": capabilities.source_version,
                 "missing": list(capabilities.missing)[:20],
             },
-        )
+        ),
+        Check(
+            "source_identity",
+            "pass" if capabilities.identity_status == "present" else "fail",
+            f"Source identity: {identity_detail}.",
+            {
+                "status": capabilities.identity_status,
+                "source_identity": capabilities.source_identity,
+            },
+        ),
     ]
 
 
@@ -223,32 +239,44 @@ def _cloud(settings: Settings) -> list[Check]:
         return [Check("gcp_reads", "skip", "GCP Batch observation is disabled.")]
     from rainstone.adapters.gcp_batch import HttpGcpClient
 
-    client = HttpGcpClient()
+    required = {"batch.jobs.list": True}
+    required["compute.instances.list"] = settings.gcp_enrich_compute
+    required["logging.logEntries.list"] = settings.gcp_enrich_logging
     try:
-        probe = client.get_batch_job(settings.gcp_project, settings.gcp_location, "rainstone-probe")
-        reachable = True
+        results = HttpGcpClient().probe_access(settings.gcp_project, settings.gcp_location)
     except Exception as error:  # noqa: BLE001 - reported as a capability gap
-        probe, reachable = None, False
-        detail = f"Batch reads failed ({type(error).__name__})."
-    if reachable:
-        detail = (
-            "Batch API answered; a missing probe job is expected."
-            if probe is None
-            else "Batch API answered."
+        return [
+            Check(
+                "gcp_reads",
+                "fail",
+                f"Cloud reads could not be probed ({type(error).__name__}).",
+                {"project": settings.gcp_project, "location": settings.gcp_location},
+            )
+        ]
+    checks: list[Check] = []
+    for operation, enabled in required.items():
+        outcome = results.get(operation, "unavailable")
+        if not enabled:
+            status, detail = "skip", f"{operation} is not used by this configuration."
+        elif outcome == "ok":
+            status, detail = "pass", f"{operation} is permitted."
+        elif outcome == "denied":
+            status, detail = "fail", f"{operation} is denied for this deployment identity."
+        else:
+            status, detail = "fail", f"{operation} is {outcome}."
+        checks.append(
+            Check(
+                f"gcp:{operation}",
+                status,
+                detail,
+                {
+                    "project": settings.gcp_project,
+                    "location": settings.gcp_location,
+                    "probe_result": outcome,
+                },
+            )
         )
-    return [
-        Check(
-            "gcp_reads",
-            "pass" if reachable else "fail",
-            detail,
-            {
-                "project": settings.gcp_project,
-                "location": settings.gcp_location,
-                "compute_enrichment": settings.gcp_enrich_compute,
-                "logging_enrichment": settings.gcp_enrich_logging,
-            },
-        )
-    ]
+    return checks
 
 
 def _baseline(session: Session, settings: Settings) -> list[Check]:
@@ -393,26 +421,189 @@ def _collection(session: Session, settings: Settings) -> list[Check]:
     return checks
 
 
-def run_checks(session: Session, settings: Settings | None = None) -> dict:
+SOURCE_CONTEXTS = ("collector", "bootstrap")
+STALE_AFTER = timedelta(minutes=15)
+
+
+def _overall(checks: list[dict]) -> str:
+    worst = max((STATUS_ORDER[check["status"]] for check in checks), default=0)
+    return next(name for name, value in STATUS_ORDER.items() if value == worst)
+
+
+def run_checks(
+    session: Session, settings: Settings | None = None, *, context: str = "web"
+) -> dict:
+    """Run the probes this process can actually perform.
+
+    Only the collector and bootstrap hold source and cloud credentials, so the
+    web context runs local checks and reports their recorded findings instead of
+    skipping probes it could never run.
+    """
     settings = settings or get_settings()
     checks: list[Check] = []
     checks.extend(_application_database(session))
     checks.extend(_instance_identity(session, settings))
-    checks.extend(_galaxy_source(settings))
-    checks.extend(_kubernetes(settings))
-    checks.extend(_cloud(settings))
+    if context != "web":
+        checks.extend(_galaxy_source(settings))
+        checks.extend(_kubernetes(settings))
+        checks.extend(_cloud(settings))
     checks.extend(_baseline(session, settings))
     checks.extend(_catalog(session, settings))
     checks.extend(_collection(session, settings))
-    worst = max((STATUS_ORDER[check.status] for check in checks), default=0)
-    overall = next(name for name, value in STATUS_ORDER.items() if value == worst)
-    return {
+    serialized = [asdict(check) for check in checks]
+    report = {
         "generated_at": datetime.now(UTC).isoformat(),
-        "overall_status": overall,
+        "context": context,
+        "overall_status": _overall(serialized),
         "auth_mode": settings.auth_mode,
         "tenant": settings.tenant_slug,
-        "checks": [asdict(check) for check in checks],
-        "failed_capabilities": [
-            check.name for check in checks if check.status in {"fail", "warn"}
-        ],
+        "checks": serialized,
     }
+    if context == "web":
+        report = _merge_recorded(session, settings, report)
+    report["failed_capabilities"] = [
+        check["name"] for check in report["checks"] if check["status"] in {"fail", "warn"}
+    ]
+    return report
+
+
+def _merge_recorded(session: Session, settings: Settings, report: dict) -> dict:
+    """Add the collector's and bootstrap's own findings, with their age."""
+    tenant = session.scalar(select(Tenant).where(Tenant.slug == settings.tenant_slug))
+    now = datetime.now(UTC)
+    merged = list(report["checks"])
+    sources: list[dict] = []
+    for context in SOURCE_CONTEXTS:
+        recorded = (
+            session.scalar(
+                select(CapabilityReport).where(
+                    CapabilityReport.tenant_id == tenant.id,
+                    CapabilityReport.context == context,
+                )
+            )
+            if tenant is not None
+            else None
+        )
+        if recorded is None:
+            if context == "collector":
+                merged.append(
+                    asdict(
+                        Check(
+                            "collector_diagnostics",
+                            "warn",
+                            "The collector has not recorded any capability checks yet, so "
+                            "source and cloud access is unverified here.",
+                        )
+                    )
+                )
+            continue
+        age = now - recorded.generated_at
+        stale = age > STALE_AFTER
+        sources.append(
+            {
+                "context": context,
+                "generated_at": recorded.generated_at.isoformat(),
+                "age_seconds": int(age.total_seconds()),
+                "stale": stale,
+                "overall_status": recorded.overall_status,
+            }
+        )
+        for check in recorded.report.get("checks", []):
+            entry = dict(check)
+            entry["name"] = f"{context}:{entry['name']}"
+            entry["facts"] = {
+                **entry.get("facts", {}),
+                "recorded_at": recorded.generated_at.isoformat(),
+                "recorded_by": context,
+                "stale": stale,
+            }
+            if stale:
+                # A stale finding must never read as a current success.
+                entry["status"] = "warn" if entry["status"] == "pass" else entry["status"]
+                entry["detail"] = (
+                    f"{entry['detail']} (recorded {int(age.total_seconds())}s ago; "
+                    "the collector has not reported since)"
+                )
+            merged.append(entry)
+    report["checks"] = merged
+    report["recorded_reports"] = sources
+    report["overall_status"] = _overall(merged)
+    return report
+
+
+def schema_head() -> str | None:
+    """The migration revision this release expects."""
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    try:
+        return ScriptDirectory.from_config(Config("alembic.ini")).get_current_head()
+    except Exception:  # noqa: BLE001 - reported as an unknown head
+        return None
+
+
+def readiness(session: Session, settings: Settings | None = None) -> dict:
+    """Can this process serve correct reports right now?
+
+    Readiness is deliberately stricter than liveness: an unmigrated database or
+    an unresolved fixed scope must keep a pod out of service rather than restart
+    it.
+    """
+    settings = settings or get_settings()
+    reasons: list[str] = []
+    facts: dict = {"expected_schema": schema_head()}
+    try:
+        applied = session.execute(text("SELECT version_num FROM alembic_version")).scalar()
+    except Exception as error:  # noqa: BLE001 - reported as not ready
+        session.rollback()
+        return {
+            "ready": False,
+            "reasons": [f"the Rainstone database is unavailable ({type(error).__name__})"],
+            "facts": facts,
+        }
+    facts["applied_schema"] = applied
+    if applied is None:
+        reasons.append("the Rainstone database has no applied migration")
+    elif facts["expected_schema"] and applied != facts["expected_schema"]:
+        reasons.append(
+            f"the database is at migration {applied}, this release expects "
+            f"{facts['expected_schema']}"
+        )
+    tenant = session.scalar(select(Tenant).where(Tenant.slug == settings.tenant_slug))
+    facts["tenant"] = settings.tenant_slug
+    if tenant is None:
+        reasons.append(f"instance '{settings.tenant_slug}' is not seeded yet")
+    elif settings.auth_mode == "anvil-workspace":
+        account = settings.workspace_owner_source_id
+        owners = list(
+            session.scalars(
+                select(Owner).where(
+                    Owner.tenant_id == tenant.id,
+                    (Owner.source_id == account) | (Owner.label == account),
+                )
+            )
+        )
+        facts["workspace_account_matches"] = len(owners)
+        if len(owners) != 1:
+            reasons.append(
+                f"the configured shared Galaxy account '{account}' resolves to {len(owners)} "
+                "owners"
+            )
+    return {"ready": not reasons, "reasons": reasons, "facts": facts}
+
+
+def record_report(session: Session, tenant_id: uuid.UUID, report: dict) -> None:
+    """Persist a context's findings so the web process can show them."""
+    context = report.get("context", "collector")
+    row = session.scalar(
+        select(CapabilityReport).where(
+            CapabilityReport.tenant_id == tenant_id, CapabilityReport.context == context
+        )
+    )
+    if row is None:
+        row = CapabilityReport(id=uuid.uuid4(), tenant_id=tenant_id, context=context)
+        session.add(row)
+    row.generated_at = datetime.fromisoformat(report["generated_at"])
+    row.overall_status = report["overall_status"]
+    row.report = report
+    session.flush()

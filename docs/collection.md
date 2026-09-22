@@ -105,6 +105,16 @@ provider-billable, then live Compute timestamps, then audit lifecycle markers,
 then Kubernetes occupancy, then task events, then configured baseline
 occupancy. Lower-precedence evidence never overwrites better evidence.
 
+## Batch refresh fairness
+
+Active Batch resources page through a durable cursor rather than always taking
+the first slice, because a sustained active set larger than one page would
+otherwise starve the rest and leave short-lived VM observations unrecorded.
+Terminal reconciliation keeps reserved capacity; when the configured budget is
+too small to reserve any, the next cycle leads with reconciliation so neither
+list starves. A cycle that has not covered the active list reports itself
+unexhausted and is drained immediately instead of waiting a full interval.
+
 ## Price coverage
 
 The bundled catalog covers the `us-central1` shapes captured in Phase 0. The CI
@@ -118,3 +128,12 @@ cannot be replaced with different content. A refresh validates the artifact
 before trusting it, imports prices and activates the version in one transaction,
 and on failure keeps the last known good catalog. Without a configured feed the
 active catalog is a pinned historical snapshot, and the status report says so.
+
+An artifact from a feed is untrusted until an Ed25519 signature over its
+canonical content verifies against a release-pinned public key, configured as
+`key_id:base64-public-key` pairs. Trusting two keys at once is how a key is
+rotated: publish with the new key while the old one is still trusted, then drop
+the old key. A digest the artifact declares about itself is an integrity aid
+only — an attacker controls both the content and that digest — so it never
+establishes authenticity. A feed cannot be configured without trusted keys, and
+a verification failure leaves the working catalog in place.

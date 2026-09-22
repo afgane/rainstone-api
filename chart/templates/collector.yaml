@@ -24,10 +24,17 @@ spec:
         {{- include "rainstone.labels" . | nindent 8 }}
         app.kubernetes.io/component: collector
     spec:
-      serviceAccountName: {{ include "rainstone.serviceAccountName" . }}
+      serviceAccountName: {{ include "rainstone.serviceAccountName" (list . "collector") }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
+      initContainers:
+        - name: wait-ready
+          image: {{ include "rainstone.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["rainstone", "wait-ready", "--timeout", "900"]
+          env: {{- include "rainstone.env" . | nindent 12 }}
+          resources: {{- toYaml .Values.collectorResources | nindent 12 }}
       containers:
         - name: collector
           image: {{ include "rainstone.image" . }}
@@ -36,11 +43,14 @@ spec:
           env:
             {{- include "rainstone.env" . | nindent 12 }}
             {{- include "rainstone.collectorEnv" . | nindent 12 }}
+          # Liveness is a loop heartbeat, not dependency health: a denied cloud
+          # API or an unreachable source must degrade coverage and back off,
+          # not restart collection from healthy sources.
           livenessProbe:
             exec:
-              command: ["rainstone", "doctor"]
+              command: ["rainstone", "heartbeat", "--max-age", "300"]
             initialDelaySeconds: 60
-            periodSeconds: 120
-            timeoutSeconds: 30
+            periodSeconds: 60
+            timeoutSeconds: 10
           resources: {{- toYaml .Values.collectorResources | nindent 12 }}
 {{- end }}

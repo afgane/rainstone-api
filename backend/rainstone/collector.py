@@ -17,19 +17,26 @@ import time
 import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
 
 from sqlalchemy import Engine, create_engine, select, text
 from sqlalchemy.orm import Session
 
 from rainstone.adapters.contracts import ObservationBatch, SourceAdapter
-from rainstone.adapters.galaxy_db import GalaxyDatabaseAdapter, discover_capabilities
+from rainstone.adapters.galaxy_db import (
+    GalaxyDatabaseAdapter,
+    SourceIdentityUnavailable,
+    discover_capabilities,
+)
 from rainstone.adapters.gcp_batch import BatchCollector, BatchTarget, HttpGcpClient
 from rainstone.adapters.kubernetes import HttpKubernetesClient, KubernetesCollector
 from rainstone.baseline import BaselineProfile, classify_job
+from rainstone.catalog import parse_trusted_keys
 from rainstone.catalog import refresh as refresh_catalog
 from rainstone.config import Settings, get_settings
 from rainstone.costing import calculate_tenant
 from rainstone.db import engine as application_engine
+from rainstone.doctor import record_report, run_checks
 from rainstone.ingestion import (
     apply_batch,
     read_cursor,
@@ -146,19 +153,34 @@ def tenant_id_for(settings: Settings) -> uuid.UUID:
     return stable_id("tenant", settings.tenant_slug)
 
 
-def ensure_binding(session: Session, settings: Settings, fingerprint: str, version: str | None) -> None:
-    """Refuse to reuse an instance identity for a different source database."""
+def ensure_binding(
+    session: Session,
+    settings: Settings,
+    *,
+    source_identity: str,
+    schema_fingerprint: str | None = None,
+    version: str | None = None,
+) -> None:
+    """Refuse to collect from a database this instance is not enrolled with.
+
+    Identity comes from the source database's enrolled identifier, so a reader
+    whose column grants hide columns still matches, while a replacement database
+    with an identical schema does not.
+    """
     tenant_id = tenant_id_for(settings)
     binding = session.scalar(select(SourceBinding).where(SourceBinding.tenant_id == tenant_id))
     if binding is None:
         raise SourceBindingMismatch(
             "this instance has no source binding; run `rainstone bootstrap` first"
         )
-    if binding.source_fingerprint != fingerprint:
+    if binding.source_identity != source_identity:
         raise SourceBindingMismatch(
-            "the configured Galaxy database does not match the bound source for this instance; "
-            "seed a new instance identity instead of inheriting this one"
+            "the configured Galaxy database is not the source this instance is enrolled with "
+            f"(enrolled {binding.source_identity}, found {source_identity}); re-run bootstrap "
+            "with --replace-source to enroll it deliberately, or seed a new instance identity"
         )
+    # A schema change is a capability change, not a new source.
+    binding.schema_fingerprint = schema_fingerprint or binding.schema_fingerprint
     binding.source_version = version or binding.source_version
     tenant = session.get(Tenant, tenant_id)
     if tenant is not None:
@@ -183,6 +205,7 @@ class Collector:
         self._sleep = sleeper
         self._tenant_id = tenant_id_for(settings)
         self._catalog_due = 0.0
+        self._diagnostics_due = 0.0
 
     @property
     def tenant_id(self) -> uuid.UUID:
@@ -231,6 +254,23 @@ class Collector:
             source.last_result = {**result, "revision": str(revision.id)}
             return source.last_result
 
+    def heartbeat(self) -> None:
+        """Record that the loop is alive, independently of dependency health."""
+        path = self._settings.collector_heartbeat_path
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(datetime.now(UTC).isoformat())
+        except OSError as error:  # noqa: BLE001 - heartbeat is best effort
+            logger.warning("could not write the collector heartbeat: %s", error)
+
+    def record_capabilities(self) -> dict:
+        """Run and persist the checks only this process has credentials for."""
+        with Session(self._engine) as session:
+            report = run_checks(session, self._settings, context="collector")
+            record_report(session, self._tenant_id, report)
+            session.commit()
+        return {"source": "diagnostics", "status": report["overall_status"]}
+
     def refresh_catalog(self) -> dict:
         with Session(self._engine) as session:
             result = refresh_catalog(
@@ -238,6 +278,7 @@ class Collector:
                 url=self._settings.catalog_feed_url,
                 bundled_path=self._settings.catalog_path,
                 require_signature=self._settings.catalog_require_signature,
+                trusted_keys=parse_trusted_keys(self._settings.catalog_trusted_keys),
             )
             if result["status"] in {"refreshed", "bundled"}:
                 # New prices change report facts, so recalculate rather than
@@ -249,6 +290,10 @@ class Collector:
     def run_once(self) -> list[dict]:
         now = self._clock()
         results = []
+        self.heartbeat()
+        if now >= self._diagnostics_due:
+            results.append(self.record_capabilities())
+            self._diagnostics_due = now + self._settings.diagnostics_interval_seconds
         if now >= self._catalog_due:
             results.append({"source": "price_catalog", **self.refresh_catalog()})
             self._catalog_due = now + self._settings.catalog_refresh_seconds
@@ -259,7 +304,10 @@ class Collector:
 
     def next_delay(self) -> float:
         now = self._clock()
-        due = [source.due_at for source in self._sources] + [self._catalog_due]
+        due = [source.due_at for source in self._sources] + [
+            self._catalog_due,
+            self._diagnostics_due,
+        ]
         return max(0.0, min(due) - now) if due else 1.0
 
     def run_forever(self, stop: Callable[[], bool] | None = None) -> None:
@@ -270,6 +318,9 @@ class Collector:
             delay = min(self.next_delay(), 5.0)
             if delay > 0:
                 self._sleep(delay)
+            # Sleeping does not mean stalled, and a failing dependency does not
+            # mean an unhealthy process.
+            self.heartbeat()
 
 
 def build_collector(settings: Settings | None = None) -> Collector:
@@ -290,9 +341,19 @@ def build_collector(settings: Settings | None = None) -> Collector:
                 "the Galaxy source schema is not supported: missing "
                 + ", ".join(capabilities.missing[:10])
             )
+        if capabilities.source_identity is None:
+            raise SourceIdentityUnavailable(
+                capabilities.identity_status,
+                "the configured Galaxy database has no readable Rainstone source identity "
+                f"({capabilities.identity_status}); run `rainstone bootstrap` against it",
+            )
         with Session(application_engine) as session:
             ensure_binding(
-                session, settings, capabilities.schema_fingerprint, capabilities.source_version
+                session,
+                settings,
+                source_identity=capabilities.source_identity,
+                schema_fingerprint=capabilities.schema_fingerprint,
+                version=capabilities.source_version,
             )
 
         def classify(batch: ObservationBatch) -> ObservationBatch:
