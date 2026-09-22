@@ -19,19 +19,13 @@ kind: ServiceAccount
 metadata:
   name: {{ include "rainstone.serviceAccountName" (list $ $component) }}
   labels: {{- include "rainstone.labels" $ | nindent 4 }}
-  {{- if eq $component "init" }}
-  annotations:
-    helm.sh/hook: post-install,post-upgrade
-    helm.sh/hook-weight: "-20"
-    helm.sh/hook-delete-policy: before-hook-creation
-    {{- with $config.annotations }}
-    {{- toYaml . | nindent 4 }}
-    {{- end }}
-  {{- else }}
   {{- with $config.annotations }}
   annotations: {{- toYaml . | nindent 4 }}
   {{- end }}
-  {{- end }}
+{{- if eq $component "web" }}
+# The web process calls no Kubernetes API, so it receives no token.
+automountServiceAccountToken: false
+{{- end }}
 ---
 {{- end }}
 {{- end }}
@@ -41,28 +35,20 @@ kind: Role
 metadata:
   name: {{ include "rainstone.fullname" . }}-init
   labels: {{- include "rainstone.labels" . | nindent 4 }}
-  annotations:
-    helm.sh/hook: post-install,post-upgrade
-    helm.sh/hook-weight: "-20"
-    helm.sh/hook-delete-policy: before-hook-creation
 rules:
+  # Exactly one named Secret, which the chart pre-creates empty: initialization
+  # fills it in and can read back what it published, with no permission to
+  # create or read other Secrets.
   - apiGroups: [""]
     resources: ["secrets"]
     resourceNames: [{{ include "rainstone.sourceSecret" . | quote }}]
     verbs: ["get", "patch", "update"]
-  - apiGroups: [""]
-    resources: ["secrets"]
-    verbs: ["create"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: {{ include "rainstone.fullname" . }}-init
   labels: {{- include "rainstone.labels" . | nindent 4 }}
-  annotations:
-    helm.sh/hook: post-install,post-upgrade
-    helm.sh/hook-weight: "-20"
-    helm.sh/hook-delete-policy: before-hook-creation
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role

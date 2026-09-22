@@ -232,6 +232,10 @@ class HttpGcpClient:
         A probe reports `ok`, `denied` or `unavailable`; a missing resource is
         `ok`, because absence is a valid answer from an API that answered.
         """
+        # Every operation collection performs is probed, not only the listings:
+        # list permission does not imply get, and a missing resource answers
+        # 404, which is a permitted call rather than a denial.
+        missing = "rainstone-capability-probe"
         probes = {
             "batch.jobs.list": (
                 self._get,
@@ -239,6 +243,31 @@ class HttpGcpClient:
                     "https://batch.googleapis.com/v1/"
                     f"projects/{project}/locations/{location}/jobs",
                     {"pageSize": 1},
+                ),
+            ),
+            "batch.jobs.get": (
+                self._get,
+                (
+                    "https://batch.googleapis.com/v1/"
+                    f"projects/{project}/locations/{location}/jobs/{missing}",
+                    None,
+                ),
+            ),
+            "batch.tasks.list": (
+                self._get,
+                (
+                    "https://batch.googleapis.com/v1/"
+                    f"projects/{project}/locations/{location}/jobs/{missing}"
+                    "/taskGroups/group0/tasks",
+                    {"pageSize": 1},
+                ),
+            ),
+            "compute.instances.get": (
+                self._get,
+                (
+                    "https://compute.googleapis.com/compute/v1/"
+                    f"projects/{project}/zones/{location}-a/instances/{missing}",
+                    None,
                 ),
             ),
             "compute.instances.list": (

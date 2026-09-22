@@ -54,6 +54,7 @@ rainstone ingest-fixtures --path fixtures/phase1.json
 rainstone collect [--cycles N]
 rainstone bootstrap --admin-database-url … --shared-account … --write-dsn …
 rainstone wait-ready [--timeout 600]
+rainstone mark-installed
 rainstone heartbeat [--max-age 300]
 rainstone doctor
 rainstone catalog validate|import|refresh|coverage [--path …]

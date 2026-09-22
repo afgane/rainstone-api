@@ -53,7 +53,6 @@ source:
   dsnSecret: ""                 # defaults to <release>-source, written by initialization
   dsnSecretKey: dsn
   sharedAccount: ""             # Galaxy account this deployment reports on
-  replaceSource: false          # enroll a different source database deliberately
   statementTimeout: 30s
   batchSize: 500
   replayOverlapSeconds: 300
@@ -89,6 +88,11 @@ catalog:
   # it verifies against one of these; listing two is how a key is rotated.
   trustedKeys: ""
   requireSignature: false
+
+initialization:
+  # Finished initialization Jobs are cleaned up by Kubernetes rather than kept
+  # around per revision.
+  ttlSecondsAfterFinished: 3600
 
 retentionDays: 0                # 0 keeps all collected history
 

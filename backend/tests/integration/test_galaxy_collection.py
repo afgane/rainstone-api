@@ -562,7 +562,8 @@ def test_identity_follows_the_source_database_not_its_schema(source_engine) -> N
                 session.commit()
 
 
-def test_a_replacement_source_is_only_adopted_when_enrolled_deliberately(source_engine) -> None:
+def test_a_different_source_needs_its_own_instance_rather_than_rebinding(source_engine) -> None:
+    """Rebinding would merge two databases' job histories, so it is refused."""
     from rainstone.bootstrap import seed_instance
 
     settings = Settings(
@@ -576,23 +577,114 @@ def test_a_replacement_source_is_only_adopted_when_enrolled_deliberately(source_
                 session, settings, capabilities, owner_source_id="1", owner_label="researcher",
                 descriptor={}, source_identity=original,
             )
-            with pytest.raises(RuntimeError, match="--replace-source"):
+            with pytest.raises(RuntimeError, match="new instance identity"):
                 seed_instance(
                     session, settings, capabilities, owner_source_id="1",
                     owner_label="researcher", descriptor={}, source_identity=replacement,
                 )
             session.rollback()
-            result = seed_instance(
+            # Re-running against the same source stays idempotent.
+            again = seed_instance(
                 session, settings, capabilities, owner_source_id="1", owner_label="researcher",
-                descriptor={}, source_identity=replacement, replace_source=True,
+                descriptor={}, source_identity=original,
             )
-            assert result["source_identity"] == replacement
+            assert again["source_identity"] == original
     finally:
         with Session(engine) as session:
             tenant = session.get(Tenant, stable_id("tenant", settings.tenant_slug))
             if tenant is not None:
                 session.delete(tenant)
                 session.commit()
+
+
+def test_a_legacy_binding_adopts_the_identity_it_finds(source_engine) -> None:
+    """Upgrading from 0004 records an identity without a replacement override."""
+    from rainstone.bootstrap import LEGACY_IDENTITY, seed_instance
+    from rainstone.models import SourceBinding
+
+    settings = Settings(
+        auth_mode="development", demo_data=True, tenant_slug=f"legacy-{uuid.uuid4().hex[:8]}"
+    )
+    capabilities = discover_capabilities(source_engine)
+    identity = str(uuid.uuid4())
+    tenant_id = stable_id("tenant", settings.tenant_slug)
+    try:
+        with Session(engine) as session:
+            seed_instance(
+                session, settings, capabilities, owner_source_id="1", owner_label="researcher",
+                descriptor={}, source_identity=LEGACY_IDENTITY,
+            )
+            binding = session.scalar(
+                select(SourceBinding).where(SourceBinding.tenant_id == tenant_id)
+            )
+            instance_uuid = binding.instance_uuid
+            result = seed_instance(
+                session, settings, capabilities, owner_source_id="1", owner_label="researcher",
+                descriptor={}, source_identity=identity,
+            )
+            assert result["source_identity"] == identity
+            assert result["instance_uuid"] == str(instance_uuid)
+    finally:
+        with Session(engine) as session:
+            tenant = session.get(Tenant, tenant_id)
+            if tenant is not None:
+                session.delete(tenant)
+                session.commit()
+
+
+def test_two_instances_keep_overlapping_source_ids_apart(source_engine) -> None:
+    """Separate instances are how two sources coexist; IDs must not collide."""
+    from dataclasses import replace as replace_fields
+
+    first = Settings(
+        auth_mode="development", demo_data=True, tenant_slug=f"src-a-{uuid.uuid4().hex[:6]}"
+    )
+    second = Settings(
+        auth_mode="development", demo_data=True, tenant_slug=f"src-b-{uuid.uuid4().hex[:6]}"
+    )
+    tenants = [stable_id("tenant", value.tenant_slug) for value in (first, second)]
+    try:
+        with Session(engine) as session:
+            for settings, tenant_id in zip((first, second), tenants, strict=True):
+                session.add(
+                    Tenant(
+                        id=tenant_id,
+                        slug=settings.tenant_slug,
+                        display_name=settings.tenant_slug,
+                        capabilities={"demo": False},
+                    )
+                )
+            session.commit()
+        adapter = GalaxyDatabaseAdapter(source_engine)
+        batch = adapter.collect({})
+        for tenant_id, tool in zip(tenants, ("tool-a", "tool-b"), strict=True):
+            relabelled = replace_fields(
+                batch,
+                jobs=tuple(replace_fields(job, tool_id=tool) for job in batch.jobs),
+            )
+            with Session(engine) as session:
+                apply_batch(session, tenant_id, relabelled)
+                session.commit()
+        with Session(engine) as session:
+            rows = {
+                job.tenant_id: job
+                for job in session.scalars(select(Job).where(Job.source_id == "1"))
+                if job.tenant_id in set(tenants)
+            }
+            assert len(rows) == 2
+            assert {job.tool_id for job in rows.values()} == {"tool-a", "tool-b"}
+            assert len({job.id for job in rows.values()}) == 2
+            cursors = {
+                read_cursor(session, tenant_id, "galaxy_db").get("phase") for tenant_id in tenants
+            }
+            assert cursors == {"incremental"} or cursors == {"backfill"}
+    finally:
+        with Session(engine) as session:
+            for tenant_id in tenants:
+                tenant = session.get(Tenant, tenant_id)
+                if tenant is not None:
+                    session.delete(tenant)
+            session.commit()
 
 
 def test_provisioned_reader_role_has_least_privilege_reads(source_engine) -> None:

@@ -43,8 +43,8 @@ versioned image, so they restart independently and hold different credentials.
   identity. An operator kubeconfig is never mounted.
 - Web, collector and initialization run under separate service accounts.
   Observation permissions and any Workload Identity binding belong to the
-  collector; initialization may write only the source credential Secret; the web
-  account is bound to nothing. One honest limitation: on a node whose metadata
+  collector; initialization may only patch the one named source Secret; the web
+  account is bound to nothing and does not receive an API token at all. One honest limitation: on a node whose metadata
   server is reachable from any pod, that node-wide credential is available
   regardless of service accounts, so restricting the metadata server remains a
   deployment prerequisite this chart cannot enforce.
@@ -81,16 +81,31 @@ an interrupted run is simply re-run:
 4. import or refresh the price catalog;
 5. record a self-check in the initialization context.
 
-The chart runs this as a post-install and post-upgrade hook, because the
-chart's own database does not exist before install. Application pods do not
-depend on hook ordering: each waits on `rainstone wait-ready` in an init
-container, so no pod serves against an unmigrated or unenrolled database, and a
-rollout completes only after initialization does.
+Initialization is an ordinary release resource, not a Helm hook. A post-install
+hook would deadlock under `helm install --wait`: Helm waits for the deployments,
+whose pods wait on `rainstone wait-ready`, which waits for the hook. As a normal
+Job it is created alongside the deployments and runs while their init containers
+wait, so `--wait` converges. Each revision gets its own Job name, and finished
+Jobs are cleaned up by their TTL.
+
+Readiness also waits for *this release's* initialization marker, not only for a
+compatible schema: an upgrade that changes no migration would otherwise look
+ready before its own initialization had run.
 
 Supply `source.adminSecret` (a Secret holding an installation-time DSN) and
 `source.sharedAccount`. The application never receives that credential: the
-initialization account may write exactly one Secret, the scoped reader DSN that
-the collector mounts. Running the command directly is still supported:
+chart pre-creates one empty Secret for the scoped reader DSN, and the
+initialization role may only get, patch and update that named Secret — it
+cannot create or read others.
+
+Publication is part of provisioning. Because the reader role commits to the
+source database before its credential is published, an interrupted run would
+otherwise leave the collector without a usable credential. Each run therefore
+reconciles the two: it reads back what is published, tests whether it still
+opens a session, rotates and republishes when it does not, verifies what was
+stored, and fails rather than reporting success without a working credential. A
+healthy installation re-runs without rotating anything. Running the command
+directly is still supported:
 
 ```console
 rainstone bootstrap \
@@ -113,9 +128,15 @@ reader see different columns of the same database, while two unrelated
 databases can share a schema exactly.
 
 That identifier survives upgrades and restores of the source database. A
-*different* database is refused with an explicit message until an operator
-enrolls it with `rainstone bootstrap --replace-source`, so a replacement can
-never inherit an instance's history and job IDs by accident.
+*different* database is refused outright: reporting facts are keyed by instance,
+so rebinding would merge two databases' job IDs, attempts, invocation
+memberships and ingestion cursors into one history. A new source therefore needs
+its own instance identity (`RAINSTONE_TENANT_SLUG`), which keeps the two
+histories separate and lets the old one remain readable.
+
+Bindings created before source identity existed carry a `pending-enrolment`
+marker and adopt the identity they find on the next bootstrap. That is the
+upgrade path, and it is deliberately distinct from source replacement.
 
 ### Readiness and liveness
 
@@ -140,11 +161,19 @@ Recorded findings carry their own timestamp and age. A report older than fifteen
 minutes is marked stale and a stale success is downgraded to a warning, so an
 absent or lagging collector can never read as a current successful check.
 
+Recorded findings come in two kinds. The collector is expected continuously, so
+its report ages into warnings. Bootstrap runs once per installation: its
+findings are kept as history, never decide current health, and are superseded by
+a fresh collector check of the same capability — so a failure fixed after
+installation does not linger as a permanent fault.
+
 Cloud probes distinguish outcomes that used to look alike: `denied` (the
 deployment identity lacks the permission), `unavailable` (the API could not be
 reached) and `ok` — a missing resource is a valid answer from an API that
-answered, not a pass for an API that refused. Optional enrichment that is denied
-degrades coverage with a visible gap rather than failing collection.
+answered, not a pass for an API that refused. Every operation collection
+performs is probed, including the gets and task listings, because list
+permission does not imply them. Optional enrichment that is denied degrades
+coverage with a visible gap rather than failing collection.
 
 Findings name capability gaps without exposing DSNs, credentials, tokens, raw
 job parameters or arbitrary logs, so the report can be downloaded through the
@@ -156,8 +185,13 @@ automatically; submitting synthetic jobs is an opt-in development action.
 - Price coverage is `us-central1` only, from a pinned 2026-09-19 snapshot. The
   maintained catalog feed and publisher are not yet operated, so this release
   cannot claim unattended current-price reporting. Enabling a feed requires
-  `catalog.trustedKeys`; the chart refuses to render a feed URL without one.
+  `catalog.trustedKeys`; the chart refuses to render a feed URL without one, and
+  a downloaded artifact always needs a verified signature regardless of
+  settings.
 - The AnVIL dev pilot, live Leo-route validation, restart and upgrade exercises,
-  and completed-job visibility measurement are not yet done.
+  and completed-job visibility measurement are not yet done. The chart is
+  verified by rendering and linting only: a real `helm install --wait` and
+  populated upgrade, including recovery from an interrupted initialization, is
+  still outstanding.
 - Billing reconciliation, Spot and preemption completeness, and hosted transport
   remain separately scoped.

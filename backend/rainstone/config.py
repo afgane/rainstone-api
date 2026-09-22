@@ -66,6 +66,9 @@ class Settings(BaseSettings):
     catalog_trusted_keys: str = ""
     catalog_require_signature: bool = False
 
+    # Identifies this release's initialization run; readiness waits for it.
+    installation_id: str = ""
+
     diagnostics_enabled: bool = True
     diagnostics_interval_seconds: int = 300
     collector_heartbeat_path: Path = Path("/tmp/rainstone-collector.heartbeat")  # noqa: S108

@@ -244,6 +244,50 @@ def reader_dsn(admin_dsn: str, role: str, password: str) -> str:
     return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
 
 
+def read_kubernetes_secret(
+    target: str,
+    *,
+    service_account_dir: Path = SERVICE_ACCOUNT_DIR,
+    api_server: str = "https://kubernetes.default.svc",
+) -> str | None:
+    """Read back a published credential, so a retry can reconcile it."""
+    import base64
+
+    name, _, key = target.partition("/")
+    key = key or "dsn"
+    namespace = (service_account_dir / "namespace").read_text().strip()
+    token = (service_account_dir / "token").read_text().strip()
+    ca_path = service_account_dir / "ca.crt"
+    context = ssl.create_default_context(cafile=str(ca_path)) if ca_path.exists() else None
+    request = urllib.request.Request(
+        f"{api_server}/api/v1/namespaces/{namespace}/secrets/{name}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30, context=context) as response:  # noqa: S310
+            payload = json.load(response)
+    except urllib.error.HTTPError as error:
+        if error.code == 404:
+            return None
+        raise
+    encoded = (payload.get("data") or {}).get(key)
+    return base64.b64decode(encoded).decode() if encoded else None
+
+
+def credential_works(dsn: str, *, statement_timeout: str = "10s") -> bool:
+    """Does a published credential still open a usable read-only session?"""
+    try:
+        engine = create_engine(dsn, pool_pre_ping=True)
+        with engine.connect() as connection:
+            connection.exec_driver_sql("SET TRANSACTION READ ONLY")
+            connection.exec_driver_sql(f"SET LOCAL statement_timeout = '{statement_timeout}'")
+            connection.execute(text("SELECT 1"))
+        engine.dispose()
+        return True
+    except Exception:  # noqa: BLE001 - any failure means it must be republished
+        return False
+
+
 def resolve_shared_account(admin_dsn: str, account: str) -> tuple[str, str]:
     """Map the configured shared Galaxy account to its source owner ID."""
     engine = create_engine(admin_dsn, pool_pre_ping=True)
@@ -264,6 +308,11 @@ def resolve_shared_account(admin_dsn: str, account: str) -> tuple[str, str]:
     return matches[0]["source_id"], matches[0]["username"] or account
 
 
+# Bindings created before source identity existed carry this marker and adopt
+# the identity they find; that is an upgrade, not a source replacement.
+LEGACY_IDENTITY = "pending-enrolment"
+
+
 def seed_instance(
     session: Session,
     settings: Settings,
@@ -273,7 +322,6 @@ def seed_instance(
     owner_label: str,
     descriptor: dict,
     source_identity: str,
-    replace_source: bool = False,
 ) -> dict:
     """Idempotently seed tenant identity, source binding, policy and owner."""
     tenant_id = stable_id("tenant", settings.tenant_slug)
@@ -311,17 +359,21 @@ def seed_instance(
             enrolled_at=now,
         )
         session.add(binding)
-    elif binding.source_identity != source_identity:
-        if not replace_source:
-            # A different source database must not inherit this instance's
-            # identity, and with it another database's job IDs.
-            raise RuntimeError(
-                "this instance is bound to a different source database "
-                f"({binding.source_identity}); re-run bootstrap with --replace-source to "
-                "enroll the new source deliberately, or seed a new instance identity"
-            )
+    elif binding.source_identity == LEGACY_IDENTITY:
+        # Upgrade path: this binding predates source identity, so record what
+        # the configured source reports without treating it as a replacement.
         binding.source_identity = source_identity
         binding.enrolled_at = now
+    elif binding.source_identity != source_identity:
+        # Facts are keyed by tenant, so rebinding this instance would merge two
+        # databases' job IDs, attempts and cursors into one history. A different
+        # source therefore needs its own instance identity.
+        raise RuntimeError(
+            "this instance is enrolled with a different source database "
+            f"({binding.source_identity}, found {source_identity}). Rebinding would merge "
+            "two databases' job histories, so configure a new instance identity "
+            "(RAINSTONE_TENANT_SLUG) for the new source and bootstrap that instead"
+        )
     binding.schema_fingerprint = capabilities.schema_fingerprint
     binding.source_version = capabilities.source_version
     binding.descriptor = descriptor
@@ -381,35 +433,57 @@ def bootstrap(
     rotate: bool = False,
     dsn_output: Path | None = None,
     descriptor: dict | None = None,
-    replace_source: bool = False,
     secret_target: str | None = None,
 ) -> dict:
-    """Provision the reader role, seed identity, and report what to store."""
+    """Provision and publish the reader credential, then seed instance identity.
+
+    Every step is idempotent and recoverable: an interrupted run leaves either
+    a working published credential or a state the next run repairs.
+    """
     settings = settings or get_settings()
     from rainstone.db import engine as application_engine
 
     admin_engine = create_engine(admin_database_url, pool_pre_ping=True)
+
+    # Publication is part of provisioning: a credential the collector cannot
+    # read is not a completed bootstrap. A retry therefore reconciles what was
+    # published with what the database holds, rotating when it must, so an
+    # interruption between the two writes recovers on the next run.
+    published: str | None = None
+    if secret_target:
+        published = read_kubernetes_secret(secret_target)
+    elif dsn_output and dsn_output.exists():
+        published = dsn_output.read_text().strip() or None
+
+    with admin_engine.connect() as connection:
+        role_exists = bool(
+            connection.execute(
+                text("SELECT 1 FROM pg_roles WHERE rolname = :role"), {"role": reader_role}
+            ).scalar()
+        )
+    usable = bool(published) and role_exists and credential_works(published)
+    must_rotate = rotate or not role_exists or not usable
     password = secrets.token_urlsafe(32)
+
     with admin_engine.begin() as connection:
         database = connection.execute(text("SELECT current_database()")).scalar()
         schema = connection.execute(text("SELECT current_schema()")).scalar()
-        existing = connection.execute(
-            text("SELECT 1 FROM pg_roles WHERE rolname = :role"), {"role": reader_role}
-        ).scalar()
         rotated = provision_reader(
             connection,
             role=reader_role,
             password=password,
             database=database,
             schema=schema,
-            rotate=rotate or not existing,
+            rotate=must_rotate,
         )
         source_identity, identity_created = enroll_source_identity(connection, role=reader_role)
+
+    dsn = reader_dsn(admin_database_url, reader_role, password) if must_rotate else published
     credential = ReaderCredential(
         role=reader_role,
-        password=password if (rotated or not existing) else "",
-        dsn=reader_dsn(admin_database_url, reader_role, password) if (rotated or not existing) else "",
-        rotated=rotated,
+        password=password if must_rotate else "",
+        dsn=dsn or "",
+        rotated=bool(rotated),
     )
     capabilities = discover_capabilities(
         admin_engine, statement_timeout=settings.galaxy_statement_timeout
@@ -424,15 +498,32 @@ def bootstrap(
             owner_label=owner_label,
             descriptor=descriptor or {},
             source_identity=source_identity,
-            replace_source=replace_source,
         )
-    if dsn_output and credential.dsn:
+
+    if not credential.dsn:
+        raise RuntimeError(
+            "no scoped reader credential is available to publish; re-run bootstrap"
+        )
+    republished = must_rotate or not usable
+    if dsn_output and republished:
         dsn_output.parent.mkdir(parents=True, exist_ok=True)
         dsn_output.write_text(credential.dsn)
         dsn_output.chmod(0o600)
     secret_result = None
-    if secret_target and credential.dsn:
+    if secret_target and republished:
         secret_result = write_kubernetes_secret(secret_target, credential.dsn)
+        # Verify what was published rather than assuming the write landed.
+        stored = read_kubernetes_secret(secret_target)
+        if stored != credential.dsn:
+            raise RuntimeError(
+                f"the scoped reader credential was not stored in {secret_target}; "
+                "re-run bootstrap to publish it"
+            )
+    if not credential_works(credential.dsn):
+        raise RuntimeError(
+            "the published scoped reader credential cannot open a session; "
+            "re-run bootstrap to rotate and republish it"
+        )
     with Session(application_engine) as session:
         # Record what initialization could verify, in its own credentials'
         # context, so the web process can report it later.
@@ -445,9 +536,10 @@ def bootstrap(
         **seeded,
         "source_identity_created": identity_created,
         "reader_role": credential.role,
-        "reader_credential_written": bool(dsn_output and credential.dsn),
+        "reader_credential_written": bool(dsn_output and republished),
         "reader_credential_secret": secret_result,
         "reader_credential_rotated": credential.rotated,
+        "reader_credential_republished": republished,
         "schema_compatible": capabilities.compatible,
         "schema_missing": list(capabilities.missing),
     }

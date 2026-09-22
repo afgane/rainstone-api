@@ -17,6 +17,7 @@ spec:
         app.kubernetes.io/component: web
     spec:
       serviceAccountName: {{ include "rainstone.serviceAccountName" (list . "web") }}
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001

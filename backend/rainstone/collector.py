@@ -176,8 +176,9 @@ def ensure_binding(
     if binding.source_identity != source_identity:
         raise SourceBindingMismatch(
             "the configured Galaxy database is not the source this instance is enrolled with "
-            f"(enrolled {binding.source_identity}, found {source_identity}); re-run bootstrap "
-            "with --replace-source to enroll it deliberately, or seed a new instance identity"
+            f"(enrolled {binding.source_identity}, found {source_identity}); configure a new "
+            "instance identity (RAINSTONE_TENANT_SLUG) for this source and bootstrap it, so the "
+            "two databases' job histories stay separate"
         )
     # A schema change is a capability change, not a new source.
     binding.schema_fingerprint = schema_fingerprint or binding.schema_fingerprint

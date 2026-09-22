@@ -1,26 +1,25 @@
 {{/*
 On-VM initialization, run as one ordered sequence on install and upgrade:
 database availability, migration, scoped reader provisioning and source/account
-enrolment, catalog import, then a recorded self-check. Every step is idempotent,
-so an interrupted run is simply re-run.
+enrolment, catalog import, a recorded self-check, and finally this release's
+completion marker. Every step is idempotent, so an interrupted run is re-run by
+the Job's own retries or by the next release.
 
-This is a post-install/post-upgrade hook because the chart's own database is
-created as an ordinary resource and does not exist before install. Application
-pods do not depend on hook ordering: each waits on `rainstone wait-ready`
-before it can serve, so no pod serves against an unmigrated or unenrolled
-database.
+This is an ordinary release resource, not a hook. A post-install hook would
+deadlock under `helm install --wait`: Helm waits for the deployments, whose pods
+wait on `rainstone wait-ready`, which waits for the hook. As a normal resource
+the Job is created alongside the deployments and runs while their init
+containers wait, so `--wait` converges. A fresh Job name per revision keeps the
+immutable pod template valid across upgrades.
 */}}
 apiVersion: batch/v1
 kind: Job
 metadata:
   name: {{ include "rainstone.fullname" . }}-init-{{ .Release.Revision }}
   labels: {{- include "rainstone.labels" . | nindent 4 }}
-  annotations:
-    helm.sh/hook: post-install,post-upgrade
-    helm.sh/hook-weight: "-5"
-    helm.sh/hook-delete-policy: before-hook-creation
 spec:
   backoffLimit: 6
+  ttlSecondsAfterFinished: {{ .Values.initialization.ttlSecondsAfterFinished }}
   template:
     metadata:
       labels:
@@ -56,15 +55,13 @@ spec:
                 --admin-database-url "$RAINSTONE_BOOTSTRAP_DATABASE_URL" \
                 --shared-account "{{ required "source.sharedAccount is required with source.adminSecret" .Values.source.sharedAccount }}" \
                 --write-secret "{{ include "rainstone.sourceSecret" . }}/{{ .Values.source.dsnSecretKey }}" \
-                {{- if .Values.source.replaceSource }}
-                --replace-source \
-                {{- end }}
                 --descriptor /descriptor/descriptor.json
               {{- else }}
               echo "no source.adminSecret configured; skipping source enrolment"
               {{- end }}
               rainstone catalog refresh
               rainstone doctor || echo "self-check reported findings; see the status page"
+              rainstone mark-installed
           env:
             {{- include "rainstone.env" . | nindent 12 }}
             {{- if .Values.source.adminSecret }}
@@ -88,10 +85,6 @@ kind: ConfigMap
 metadata:
   name: {{ include "rainstone.fullname" . }}-descriptor
   labels: {{- include "rainstone.labels" . | nindent 4 }}
-  annotations:
-    helm.sh/hook: post-install,post-upgrade
-    helm.sh/hook-weight: "-10"
-    helm.sh/hook-delete-policy: before-hook-creation
 data:
   descriptor.json: |
     {

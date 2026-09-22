@@ -205,16 +205,19 @@ def fetch(
     url: str,
     *,
     timeout: int = 30,
-    require_signature: bool = False,
     trusted_keys: dict[str, bytes] | None = None,
 ) -> ValidatedCatalog:
-    """Anonymous download; no account, key or subscription is used."""
+    """Anonymous download; no account, key or subscription is used.
+
+    A downloaded artifact always needs a verified signature: an attacker who can
+    answer the feed can also remove a signature block, so accepting unsigned
+    content would make verification optional in practice. Enforcement is not a
+    setting here.
+    """
     request = urllib.request.Request(url, headers={"Accept": "application/json"})
     with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
         payload = response.read()
-    return validate(
-        payload, source=url, require_signature=require_signature, trusted_keys=trusted_keys
-    )
+    return validate(payload, source=url, require_signature=True, trusted_keys=trusted_keys)
 
 
 def active_catalog(session: Session) -> CatalogVersion | None:
@@ -300,9 +303,7 @@ def refresh(
     current = active_catalog(session)
     if url:
         try:
-            catalog = fetch(
-                url, require_signature=require_signature, trusted_keys=trusted_keys
-            )
+            catalog = fetch(url, trusted_keys=trusted_keys)
             result = import_catalog(session, catalog)
             session.commit()
             return {**result, "status": "refreshed"}

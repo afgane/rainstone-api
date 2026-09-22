@@ -207,3 +207,37 @@ def test_target_cursors_survive_restart_and_shrinking_lists() -> None:
     batch = shrunk.collect({"active_offset": 27, "terminal_offset": 0})
     observed = {gap.detail.split("Galaxy job ")[-1].rstrip(".") for gap in batch.gaps}
     assert observed == {"a0", "a1", "a2"}
+
+
+def test_probes_cover_every_operation_collection_performs() -> None:
+    """List permission does not imply get, so each call is probed."""
+    from rainstone.adapters.gcp_batch import CloudAccessDenied, HttpGcpClient
+
+    denied = {"compute.instances.get"}
+    calls: list[str] = []
+    client = HttpGcpClient(token_provider=lambda: "token")
+
+    def fake_get(url, params=None, *, operation="read"):
+        calls.append(operation)
+        if operation in denied:
+            raise CloudAccessDenied(operation, "Forbidden")
+        return None
+
+    def fake_post(url, payload=None, *, operation="read"):
+        calls.append(operation)
+        return {}
+
+    client._get = fake_get  # noqa: SLF001 - exercising the probe matrix
+    client._post = fake_post  # noqa: SLF001
+    results = client.probe_access("demo-project", "us-east4")
+    assert set(calls) == {
+        "batch.jobs.list",
+        "batch.jobs.get",
+        "batch.tasks.list",
+        "compute.instances.list",
+        "compute.instances.get",
+        "logging.logEntries.list",
+    }
+    # A missing resource is a permitted call; a denial is a capability gap.
+    assert results["batch.jobs.get"] == "ok"
+    assert results["compute.instances.get"] == "denied"

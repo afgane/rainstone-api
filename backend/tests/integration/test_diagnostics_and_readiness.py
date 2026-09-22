@@ -157,3 +157,76 @@ def test_the_readiness_endpoint_gates_traffic_but_health_does_not(workspace_clie
     assert blocked.json()["reasons"]
     # Liveness stays independent of readiness, so a pod is not restarted.
     assert workspace_client.get("/api/health").status_code == 200
+
+
+def test_history_from_installation_does_not_decide_current_health(recorded) -> None:
+    """A one-time bootstrap finding must not outlive its recovery."""
+    with Session(engine) as session:
+        record_report(
+            session,
+            TENANT_ID,
+            {
+                "generated_at": (datetime.now(UTC) - timedelta(days=3)).isoformat(),
+                "context": "bootstrap",
+                "overall_status": "fail",
+                "auth_mode": "anvil-workspace",
+                "tenant": "anvil-demo",
+                "checks": [
+                    {
+                        "name": "gcp:batch.jobs.list",
+                        "status": "fail",
+                        "detail": "batch.jobs.list is denied for this deployment identity.",
+                        "facts": {},
+                    },
+                    {
+                        "name": "source_identity",
+                        "status": "pass",
+                        "detail": "Source identity: the enrolled source identity is readable.",
+                        "facts": {},
+                    },
+                ],
+            },
+        )
+        session.commit()
+    recorded(datetime.now(UTC))  # the collector has since reported success
+
+    with Session(engine) as session:
+        report = run_checks(session, WORKSPACE, context="web")
+    names = {check["name"] for check in report["checks"]}
+    # A current check supersedes the installation-time finding for the same
+    # capability, and history never raises the overall status.
+    assert "collector:gcp:batch.jobs.list" in names
+    assert "bootstrap:gcp:batch.jobs.list" not in names
+    assert "bootstrap:source_identity" in names
+    # The installation-time failure no longer decides current health.
+    assert report["overall_status"] != "fail"
+    assert not [
+        check
+        for check in report["checks"]
+        if check["status"] == "fail" and not check.get("history")
+    ]
+    history = next(
+        check for check in report["checks"] if check["name"] == "bootstrap:source_identity"
+    )
+    assert history["history"] is True
+    assert "during installation" in history["detail"]
+    kinds = {source["context"]: source["kind"] for source in report["recorded_reports"]}
+    assert kinds == {"collector": "current", "bootstrap": "history"}
+
+
+def test_readiness_waits_for_this_release_initialization() -> None:
+    from rainstone.doctor import mark_installed
+
+    release = f"anvil-{uuid.uuid4().hex[:6]}"
+    settings = WORKSPACE.model_copy(update={"installation_id": release})
+    with Session(engine) as session:
+        pending = readiness(session, settings)
+        assert pending["ready"] is False
+        assert any(release in reason for reason in pending["reasons"])
+
+        mark_installed(session, settings, {"source": "test"})
+        session.commit()
+        assert readiness(session, settings)["ready"] is True
+        # A later release is not covered by an earlier marker.
+        later = settings.model_copy(update={"installation_id": f"{release}-2"})
+        assert readiness(session, later)["ready"] is False

@@ -28,6 +28,7 @@ from rainstone.models import (
     CapabilityReport,
     CostRevision,
     IngestionState,
+    InstallationRecord,
     ObservationGap,
     Owner,
     SourceBinding,
@@ -239,9 +240,14 @@ def _cloud(settings: Settings) -> list[Check]:
         return [Check("gcp_reads", "skip", "GCP Batch observation is disabled.")]
     from rainstone.adapters.gcp_batch import HttpGcpClient
 
-    required = {"batch.jobs.list": True}
-    required["compute.instances.list"] = settings.gcp_enrich_compute
-    required["logging.logEntries.list"] = settings.gcp_enrich_logging
+    required = {
+        "batch.jobs.list": True,
+        "batch.jobs.get": True,
+        "batch.tasks.list": True,
+        "compute.instances.list": settings.gcp_enrich_compute,
+        "compute.instances.get": settings.gcp_enrich_compute,
+        "logging.logEntries.list": settings.gcp_enrich_logging,
+    }
     try:
         results = HttpGcpClient().probe_access(settings.gcp_project, settings.gcp_location)
     except Exception as error:  # noqa: BLE001 - reported as a capability gap
@@ -467,54 +473,62 @@ def run_checks(
     return report
 
 
+def _recorded(session: Session, tenant_id: uuid.UUID, context: str) -> CapabilityReport | None:
+    return session.scalar(
+        select(CapabilityReport).where(
+            CapabilityReport.tenant_id == tenant_id, CapabilityReport.context == context
+        )
+    )
+
+
 def _merge_recorded(session: Session, settings: Settings, report: dict) -> dict:
-    """Add the collector's and bootstrap's own findings, with their age."""
+    """Add the collector's current findings and bootstrap's installation history.
+
+    The collector is expected continuously, so its report ages into warnings.
+    Bootstrap runs once per installation: its findings are history, they never
+    decide current health, and a fresh collector check of the same capability
+    supersedes them.
+    """
     tenant = session.scalar(select(Tenant).where(Tenant.slug == settings.tenant_slug))
     now = datetime.now(UTC)
-    merged = list(report["checks"])
+    current = list(report["checks"])
+    history: list[dict] = []
     sources: list[dict] = []
-    for context in SOURCE_CONTEXTS:
-        recorded = (
-            session.scalar(
-                select(CapabilityReport).where(
-                    CapabilityReport.tenant_id == tenant.id,
-                    CapabilityReport.context == context,
+
+    collector = _recorded(session, tenant.id, "collector") if tenant is not None else None
+    collector_names: set[str] = set()
+    if collector is None:
+        current.append(
+            asdict(
+                Check(
+                    "collector_diagnostics",
+                    "warn",
+                    "The collector has not recorded any capability checks yet, so source and "
+                    "cloud access is unverified here.",
                 )
             )
-            if tenant is not None
-            else None
         )
-        if recorded is None:
-            if context == "collector":
-                merged.append(
-                    asdict(
-                        Check(
-                            "collector_diagnostics",
-                            "warn",
-                            "The collector has not recorded any capability checks yet, so "
-                            "source and cloud access is unverified here.",
-                        )
-                    )
-                )
-            continue
-        age = now - recorded.generated_at
+    else:
+        age = now - collector.generated_at
         stale = age > STALE_AFTER
         sources.append(
             {
-                "context": context,
-                "generated_at": recorded.generated_at.isoformat(),
+                "context": "collector",
+                "generated_at": collector.generated_at.isoformat(),
                 "age_seconds": int(age.total_seconds()),
                 "stale": stale,
-                "overall_status": recorded.overall_status,
+                "overall_status": collector.overall_status,
+                "kind": "current",
             }
         )
-        for check in recorded.report.get("checks", []):
+        for check in collector.report.get("checks", []):
             entry = dict(check)
-            entry["name"] = f"{context}:{entry['name']}"
+            collector_names.add(entry["name"])
+            entry["name"] = f"collector:{entry['name']}"
             entry["facts"] = {
                 **entry.get("facts", {}),
-                "recorded_at": recorded.generated_at.isoformat(),
-                "recorded_by": context,
+                "recorded_at": collector.generated_at.isoformat(),
+                "recorded_by": "collector",
                 "stale": stale,
             }
             if stale:
@@ -524,10 +538,44 @@ def _merge_recorded(session: Session, settings: Settings, report: dict) -> dict:
                     f"{entry['detail']} (recorded {int(age.total_seconds())}s ago; "
                     "the collector has not reported since)"
                 )
-            merged.append(entry)
-    report["checks"] = merged
+            current.append(entry)
+
+    bootstrap = _recorded(session, tenant.id, "bootstrap") if tenant is not None else None
+    if bootstrap is not None:
+        age = now - bootstrap.generated_at
+        sources.append(
+            {
+                "context": "bootstrap",
+                "generated_at": bootstrap.generated_at.isoformat(),
+                "age_seconds": int(age.total_seconds()),
+                "stale": False,
+                "overall_status": bootstrap.overall_status,
+                "kind": "history",
+            }
+        )
+        for check in bootstrap.report.get("checks", []):
+            if check["name"] in collector_names:
+                # A current check of the same capability supersedes it.
+                continue
+            entry = dict(check)
+            entry["name"] = f"bootstrap:{entry['name']}"
+            entry["history"] = True
+            entry["detail"] = (
+                f"{entry['detail']} (recorded during installation "
+                f"{int(age.total_seconds())}s ago)"
+            )
+            entry["facts"] = {
+                **entry.get("facts", {}),
+                "recorded_at": bootstrap.generated_at.isoformat(),
+                "recorded_by": "bootstrap",
+                "history": True,
+            }
+            history.append(entry)
+
+    report["checks"] = [*current, *history]
     report["recorded_reports"] = sources
-    report["overall_status"] = _overall(merged)
+    # Installation history does not decide current health.
+    report["overall_status"] = _overall(current)
     return report
 
 
@@ -571,6 +619,19 @@ def readiness(session: Session, settings: Settings | None = None) -> dict:
         )
     tenant = session.scalar(select(Tenant).where(Tenant.slug == settings.tenant_slug))
     facts["tenant"] = settings.tenant_slug
+    if tenant is not None and settings.installation_id:
+        facts["installation_id"] = settings.installation_id
+        completed = session.scalar(
+            select(InstallationRecord).where(
+                InstallationRecord.tenant_id == tenant.id,
+                InstallationRecord.installation_id == settings.installation_id,
+            )
+        )
+        facts["installation_completed"] = completed is not None
+        if completed is None:
+            reasons.append(
+                f"initialization for release {settings.installation_id} has not completed"
+            )
     if tenant is None:
         reasons.append(f"instance '{settings.tenant_slug}' is not seeded yet")
     elif settings.auth_mode == "anvil-workspace":
@@ -590,6 +651,34 @@ def readiness(session: Session, settings: Settings | None = None) -> dict:
                 "owners"
             )
     return {"ready": not reasons, "reasons": reasons, "facts": facts}
+
+
+def mark_installed(session: Session, settings: Settings, details: dict | None = None) -> dict:
+    """Record that this release's initialization sequence finished."""
+    tenant = session.scalar(select(Tenant).where(Tenant.slug == settings.tenant_slug))
+    if tenant is None:
+        raise RuntimeError(
+            f"instance '{settings.tenant_slug}' is not seeded, so initialization is incomplete"
+        )
+    if not settings.installation_id:
+        return {"recorded": False, "reason": "no installation id is configured"}
+    record = session.scalar(
+        select(InstallationRecord).where(
+            InstallationRecord.tenant_id == tenant.id,
+            InstallationRecord.installation_id == settings.installation_id,
+        )
+    )
+    if record is None:
+        record = InstallationRecord(
+            id=uuid.uuid4(),
+            tenant_id=tenant.id,
+            installation_id=settings.installation_id,
+        )
+        session.add(record)
+    record.completed_at = datetime.now(UTC)
+    record.details = details or {}
+    session.flush()
+    return {"recorded": True, "installation_id": settings.installation_id}
 
 
 def record_report(session: Session, tenant_id: uuid.UUID, report: dict) -> None:

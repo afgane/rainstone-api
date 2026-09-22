@@ -165,3 +165,51 @@ def test_trusted_key_configuration_is_validated() -> None:
         parse_trusted_keys("not-a-pair")
     with pytest.raises(CatalogError, match="not an Ed25519 public key"):
         parse_trusted_keys("short:" + base64.b64encode(b"tiny").decode())
+
+
+def test_a_feed_refresh_rejects_unsigned_content_by_default(monkeypatch) -> None:
+    """The minimal feed configuration must not accept unsigned artifacts."""
+    from pathlib import Path
+
+    from rainstone import catalog as catalog_module
+
+    key = Ed25519PrivateKey.generate()
+    unsigned = json.dumps(artifact()).encode()
+
+    class Response:
+        def read(self) -> bytes:
+            return unsigned
+
+        def __enter__(self) -> "Response":
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+    monkeypatch.setattr(catalog_module.urllib.request, "urlopen", lambda *_, **__: Response())
+    with pytest.raises(CatalogError, match="required but absent"):
+        catalog_module.fetch("https://feed.invalid/latest.json", trusted_keys=trusted(key))
+
+    class FailedSession:
+        """`refresh` must keep the working catalog rather than clearing it."""
+
+        def __init__(self) -> None:
+            self.rolled_back = False
+
+        def rollback(self) -> None:
+            self.rolled_back = True
+
+    session = FailedSession()
+    monkeypatch.setattr(
+        catalog_module, "active_catalog", lambda _: type("Version", (), {"catalog_id": "bundled"})()
+    )
+    result = catalog_module.refresh(
+        session,
+        url="https://feed.invalid/latest.json",
+        bundled_path=Path("catalog/gcp-us-central1-2026-09-19.json"),
+        trusted_keys=trusted(key),
+    )
+    assert result["status"] == "last_known_good"
+    assert result["catalog_id"] == "bundled"
+    assert session.rolled_back is True
+    assert "required but absent" in result["error"]

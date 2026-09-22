@@ -129,9 +129,12 @@ before trusting it, imports prices and activates the version in one transaction,
 and on failure keeps the last known good catalog. Without a configured feed the
 active catalog is a pinned historical snapshot, and the status report says so.
 
-An artifact from a feed is untrusted until an Ed25519 signature over its
-canonical content verifies against a release-pinned public key, configured as
-`key_id:base64-public-key` pairs. Trusting two keys at once is how a key is
+An artifact from a feed always needs a verified Ed25519 signature over its
+canonical content, against a release-pinned public key configured as
+`key_id:base64-public-key` pairs. That is not a setting: an attacker who can
+answer the feed can also remove a signature block, so optional enforcement would
+be no enforcement. The bundled artifact ships inside the release image and is
+trusted by provenance instead. Trusting two keys at once is how a key is
 rotated: publish with the new key while the old one is still trusted, then drop
 the old key. A digest the artifact declares about itself is an integrity aid
 only — an attacker controls both the content and that digest — so it never

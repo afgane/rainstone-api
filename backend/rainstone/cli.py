@@ -44,11 +44,6 @@ def main() -> None:
     boot.add_argument("--write-dsn", type=Path, default=None, help="Write the scoped reader DSN here")
     boot.add_argument("--descriptor", type=Path, default=None, help="JSON deployment descriptor")
     boot.add_argument(
-        "--replace-source",
-        action="store_true",
-        help="Enroll a different source database for this instance, discarding the old binding",
-    )
-    boot.add_argument(
         "--write-secret",
         default=None,
         help="Kubernetes Secret to receive the scoped reader DSN, as name[/key]",
@@ -59,6 +54,10 @@ def main() -> None:
     )
     ready.add_argument("--timeout", type=int, default=600)
     ready.add_argument("--interval", type=int, default=5)
+
+    commands.add_parser(
+        "mark-installed", help="Record that this release's initialization completed"
+    )
 
     heartbeat = commands.add_parser(
         "heartbeat", help="Check that the collector loop wrote a recent heartbeat"
@@ -112,10 +111,19 @@ def main() -> None:
                 rotate=args.rotate,
                 dsn_output=args.write_dsn,
                 descriptor=descriptor,
-                replace_source=args.replace_source,
                 secret_target=args.write_secret,
             )
         )
+        return
+
+    if args.command == "mark-installed":
+        from rainstone.config import get_settings
+        from rainstone.doctor import mark_installed
+
+        with Session(engine) as session:
+            result = mark_installed(session, get_settings())
+            session.commit()
+        _print(result)
         return
 
     if args.command == "wait-ready":

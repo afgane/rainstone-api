@@ -412,6 +412,22 @@ class CapabilityReport(Base):
     __table_args__ = (UniqueConstraint("tenant_id", "context"),)
 
 
+class InstallationRecord(Base):
+    """Marks that a specific release's initialization finished.
+
+    Schema and account state alone cannot show this: an upgrade that changes no
+    migration would otherwise look ready before its own initialization has run.
+    """
+
+    __tablename__ = "installation_record"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenant.id", ondelete="CASCADE"))
+    installation_id: Mapped[str] = mapped_column(String(200))
+    completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    details: Mapped[dict] = mapped_column(JSON, default=dict)
+    __table_args__ = (UniqueConstraint("tenant_id", "installation_id"),)
+
+
 class ObservationGap(Base):
     """A recorded loss of observation coverage that reports must not hide."""
 

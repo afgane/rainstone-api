@@ -70,6 +70,10 @@ app.kubernetes.io/part-of: galaxy
   value: {{ .Values.basePath | quote }}
 - name: RAINSTONE_DIAGNOSTICS_ENABLED
   value: {{ .Values.diagnosticsEnabled | quote }}
+# Readiness waits for this release's own initialization, not only for a schema
+# that an unchanged upgrade would already satisfy.
+- name: RAINSTONE_INSTALLATION_ID
+  value: {{ printf "%s-%d" .Release.Name (int .Release.Revision) | quote }}
 - name: RAINSTONE_CATALOG_REFRESH_SECONDS
   value: {{ .Values.catalog.refreshSeconds | quote }}
 - name: RAINSTONE_CATALOG_REQUIRE_SIGNATURE
