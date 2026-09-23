@@ -168,6 +168,18 @@ def upsert_lifetime(
         row.observed_start = lifetime.observed_start
         row.observed_end = lifetime.observed_end
         row.timing_method = lifetime.timing_method
+    elif row.observed_end is None and lifetime.observed_end is not None:
+        # Better evidence that cannot close a window must not hold it open for
+        # good. A live Compute read is the best source for when a VM started,
+        # and reports nothing at all once that VM is deleted — so the audit
+        # trail's delete marker is the only evidence the window ever ends.
+        # Filling a gap is not overwriting: the start keeps its better source,
+        # and the end records the weaker one it came from.
+        row.observed_end = lifetime.observed_end
+        row.facts = {
+            **(row.facts or {}),
+            "observed_end_timing_method": lifetime.timing_method,
+        }
     row.resource_uid = lifetime.resource_uid
     row.capacity_relationship = lifetime.capacity_relationship
     row.project = lifetime.project or row.project

@@ -19,6 +19,7 @@ from rainstone.costing import calculate_tenant
 from rainstone.db import engine
 from rainstone.ingestion import apply_batch, read_cursor, stable_id
 from rainstone.models import (
+    CapacityRelationship,
     CostLine,
     ExecutionAttempt,
     IngestionState,
@@ -810,3 +811,58 @@ def test_the_shared_account_resolves_by_name_id_or_configured_email(source_engin
                 assert readiness(session, workspace)["facts"]["workspace_account_matches"] == 1
     finally:
         _drop_tenants(settings.tenant_slug)
+
+
+def test_a_deleted_vm_closes_the_window_its_live_read_opened() -> None:
+    """The best source for a start cannot report an end once the VM is gone.
+
+    A live Compute read outranks the audit trail, but returns nothing at all
+    after deletion. If precedence discarded the delete marker wholesale the
+    lifetime would stay open for good, and every job on that VM would sit at
+    "resource lifetime is incomplete" forever — which is what the AnVIL dev
+    instance did.
+    """
+    from dataclasses import replace
+
+    from rainstone.adapters.contracts import NormalizedLifetime
+    from rainstone.ingestion import upsert_lifetime
+    from rainstone.models import ResourceLifetime
+
+    tenant_id = stable_id("tenant", f"lifetime-{uuid.uuid4().hex[:8]}")
+    started = datetime(2026, 9, 23, 0, 52, 54, tzinfo=UTC)
+    ended = datetime(2026, 9, 23, 1, 8, 37, tzinfo=UTC)
+    key = f"instance-{uuid.uuid4().hex[:8]}"
+    try:
+        with Session(engine) as session:
+            session.add(Tenant(id=tenant_id, slug=str(tenant_id), display_name="lifetime"))
+            session.flush()
+            live = NormalizedLifetime(
+                provider="gcp", resource_key=key, resource_uid=key,
+                capacity_relationship=CapacityRelationship.dedicated,
+                observed_start=started, observed_end=None,
+                timing_method="compute_instance_timestamps",
+            )
+            upsert_lifetime(session, tenant_id, live)
+            audited = replace(
+                live,
+                observed_end=ended,
+                timing_method="compute_insert_complete_to_delete_request",
+            )
+            upsert_lifetime(session, tenant_id, audited)
+            session.commit()
+            row = session.scalar(
+                select(ResourceLifetime).where(ResourceLifetime.tenant_id == tenant_id)
+            )
+            assert row.observed_end == ended
+            # The start keeps the better source; the end says where it came from.
+            assert row.timing_method == "compute_instance_timestamps"
+            assert row.observed_start == started
+            assert row.facts["observed_end_timing_method"] == (
+                "compute_insert_complete_to_delete_request"
+            )
+    finally:
+        with Session(engine) as session:
+            tenant = session.get(Tenant, tenant_id)
+            if tenant is not None:
+                session.delete(tenant)
+                session.commit()
