@@ -55,7 +55,9 @@ def test_build_rates_computes_the_documented_formula() -> None:
     assert rates[0]["hourly_rate"] == "0.097118"
     assert rates[0]["region"] == "us-central1"
     assert rates[0]["purchase_model"] == "on_demand"
-    assert rates[0]["effective_from"] == "2026-10-01T06:17:00Z"
+    # The rate is dated by the price it came from, not by when it was fetched:
+    # a catalog dated at publication can price nothing that already finished.
+    assert rates[0]["effective_from"] == "2026-01-01T00:00:00Z"
 
 
 def test_rate_provenance_carries_everything_the_spec_requires() -> None:
@@ -103,7 +105,7 @@ def test_document_declares_a_snapshot_not_historical_reconstruction() -> None:
         mapping_version="v1",
     )
     document = build_catalog_document(rates, observed_at=NOW, key_id="k", private_key=key)
-    assert document["historical_effective_time_available"] is False
+    assert document["historical_effective_time_available"] is True
     assert document["kind"] == "official_catalog_api"
     assert document["schema_version"] == 2
     assert document["coverage"]["machine_families"] == ["t2d", "n2"]
@@ -234,3 +236,35 @@ def test_load_previous_rates_from_a_local_file(tmp_path: Path) -> None:
 def test_load_previous_rates_is_empty_on_first_run() -> None:
     assert load_previous_rates(None) == []
     assert load_previous_rates("") == []
+
+
+def test_a_rate_is_dated_by_its_later_component() -> None:
+    """A combined rate is not in effect until both its components are."""
+    rates = build_rates(
+        (shape(),),
+        {
+            ("n2", "us-central1"): ComponentRates(
+                PricePoint("cpu", "core", Decimal("0.031611"), "h", "2026-01-01T00:00:00Z"),
+                PricePoint("ram", "ram", Decimal("0.004237"), "GiBy.h", "2026-03-05T12:00:00Z"),
+            )
+        },
+        observed_at=NOW,
+        mapping_version="v1",
+    )
+    assert rates[0]["effective_from"] == "2026-03-05T12:00:00Z"
+
+
+def test_a_rate_whose_component_gives_no_time_carries_none() -> None:
+    """An unknown effective time is left absent rather than invented."""
+    rates = build_rates(
+        (shape(),),
+        {
+            ("n2", "us-central1"): ComponentRates(
+                PricePoint("cpu", "core", Decimal("0.031611"), "h", None),
+                PricePoint("ram", "ram", Decimal("0.004237"), "GiBy.h", "2026-03-05T12:00:00Z"),
+            )
+        },
+        observed_at=NOW,
+        mapping_version="v1",
+    )
+    assert rates[0]["effective_from"] is None

@@ -38,6 +38,26 @@ class PublishError(ValueError):
     """The run has a problem that must block publication."""
 
 
+def _combined_effective_time(rates: ComponentRates) -> str | None:
+    """When the derived machine rate took effect: its later component's time.
+
+    A predefined shape's hourly rate is assembled from a vCPU rate and a memory
+    rate, so the combined rate was not in effect until both of its components
+    were. Publishing the retrieval time instead would date every rate to the
+    moment the catalog was built, and the application only applies a rate whose
+    effective time precedes the work being priced — so a freshly published
+    catalog could price nothing that had already finished.
+
+    The provider's own spelling is kept. When either component does not say,
+    the rate carries no effective time rather than a guessed one, which the
+    application reads as always-applicable.
+    """
+    cpu_time, ram_time = rates.cpu.effective_time, rates.ram.effective_time
+    if not (cpu_time and ram_time):
+        return None
+    return max(cpu_time, ram_time, key=lambda value: datetime.fromisoformat(value.replace("Z", "+00:00")))
+
+
 def build_rates(
     shapes: tuple[MachineShape, ...],
     region_rates: dict[tuple[str, str], ComponentRates],
@@ -59,7 +79,7 @@ def build_rates(
                     "purchase_model": "on_demand",
                     "machine_type": shape.machine_type,
                     "hourly_rate": str(rate),
-                    "effective_from": observed_iso,
+                    "effective_from": _combined_effective_time(component_rates),
                     "provenance": {
                         "cpu_sku_id": component_rates.cpu.sku_id,
                         "cpu_sku_description": component_rates.cpu.description,
@@ -139,7 +159,11 @@ def build_catalog_document(
         "observed_at": observed_at.isoformat().replace("+00:00", "Z"),
         "currency": "USD",
         "kind": "official_catalog_api",
-        "historical_effective_time_available": False,
+        # True when every rate carries the provider's own effective time, so the
+        # catalog can price work that finished before it was published.
+        "historical_effective_time_available": all(
+            rate.get("effective_from") for rate in rates
+        ),
         "source_urls": list(SOURCE_URLS),
         "coverage": {
             "regions": sorted({rate["region"] for rate in rates}),
