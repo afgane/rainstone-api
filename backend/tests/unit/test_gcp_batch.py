@@ -241,3 +241,22 @@ def test_probes_cover_every_operation_collection_performs() -> None:
     # A missing resource is a permitted call; a denial is a capability gap.
     assert results["batch.jobs.get"] == "ok"
     assert results["compute.instances.get"] == "denied"
+
+
+def test_provisioning_model_is_translated_into_catalog_vocabulary() -> None:
+    """A lifetime priced against the catalog must speak the catalog's words.
+
+    Batch says how a VM was provisioned; the catalog says how it is charged.
+    The AnVIL dev instance ran Batch jobs whose `STANDARD` VMs stayed unpriced
+    against `on_demand` rates until these were reconciled.
+    """
+    from rainstone.adapters.gcp_batch import _purchase_model
+
+    assert _purchase_model("STANDARD") == "on_demand"
+    assert _purchase_model("SPOT") == "spot"
+    assert _purchase_model("PREEMPTIBLE") == "spot"
+    assert _purchase_model(None) is None
+    assert _purchase_model("") is None
+    # An unfamiliar model keeps the provider's own word, so it reads as
+    # unpriced rather than being charged at a rate it may not deserve.
+    assert _purchase_model("RESERVATION_BOUND") == "reservation_bound"

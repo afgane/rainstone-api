@@ -54,6 +54,22 @@ class CloudAccessDenied(RuntimeError):
 ATTEMPT_REFERENCE = re.compile(r"Attempt (?P<ordinal>\d+) failed")
 
 
+def _purchase_model(value: str | None) -> str | None:
+    """Translate the provider's provisioning model into catalog vocabulary.
+
+    Batch reports how a VM was provisioned (`STANDARD`, `SPOT`); a price
+    catalog names how it is charged (`on_demand`, `spot`). They describe the
+    same thing in different words, and a lifetime whose words do not match the
+    catalog's silently fails to price. A model this mapping does not know stays
+    as the provider wrote it, so it reads as unpriced rather than being charged
+    at an on-demand rate it may not deserve.
+    """
+    normalized = (value or "").strip().lower()
+    if not normalized:
+        return None
+    return {"standard": "on_demand", "preemptible": "spot"}.get(normalized, normalized)
+
+
 def _time(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -388,7 +404,7 @@ def _instance_from_compute(payload: dict, project: str) -> InstanceObservation:
         started_at=_time(payload.get("lastStartTimestamp")),
         stopped_at=_time(payload.get("lastStopTimestamp")),
         machine_type=(payload.get("machineType") or "").rsplit("/", 1)[-1] or None,
-        purchase_model=(scheduling.get("provisioningModel") or "").lower() or None,
+        purchase_model=_purchase_model(scheduling.get("provisioningModel")),
         labels=payload.get("labels", {}) or {},
         source="compute_instance",
     )
@@ -420,7 +436,7 @@ def _machine_shape(job: dict) -> tuple[str | None, str | None]:
     for group in groups:
         for instance in group.get("instances", []) or []:
             machine = instance.get("machineType")
-            model = (instance.get("provisioningModel") or "").lower() or None
+            model = _purchase_model(instance.get("provisioningModel"))
             if machine:
                 return machine, model
     for policy in job.get("instances_policy") or job.get("allocationPolicy", {}).get(
@@ -428,7 +444,7 @@ def _machine_shape(job: dict) -> tuple[str | None, str | None]:
     ):
         shape = policy.get("policy", {})
         if shape.get("machineType"):
-            return shape["machineType"], (shape.get("provisioningModel") or "").lower() or None
+            return shape["machineType"], _purchase_model(shape.get("provisioningModel"))
     return None, None
 
 
