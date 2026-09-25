@@ -292,7 +292,39 @@ The baseline is the Galaxy server that is already running. Its numeric ID,
 machine type and zone come from the host's instance metadata, so a node without
 a Kubernetes `providerID` does not make them unknowable. Kubernetes placement
 must agree with the runner and destination mapping before a job is classified as
-using existing capacity. Server pricing stays separate from that relationship: a
+using existing capacity.
+
+Discovery names as baseline runners only runners that load Galaxy's local
+runner, because only they run inside the Galaxy server's own machine; Batch and
+Pulsar provision their own capacity, and a Kubernetes pod is placed on the
+server only when Kubernetes observation shows it there. The destinations that
+use those runners are named too, and a destination must be listed to match: a
+runner alone places only work Galaxy recorded without a destination. When
+destinations are assigned dynamically, for example by TPV, discovery reports
+them as unresolved and they must be named explicitly.
+
+The baseline assumptions hold for a declared period,
+`RAINSTONE_BASELINE_EFFECTIVE_FROM` and optionally
+`RAINSTONE_BASELINE_EFFECTIVE_TO` (`baseline.effectiveFrom` and
+`baseline.effectiveTo` in the chart). The first time a period is seen it is saved
+with the policy version, and from then on ordinary collection and
+reclassification both apply the saved period, even if configuration stops
+declaring it. Work outside it is never classified as baseline. A different
+period under the same version is refused: nothing is classified, the
+`baseline_period` self-check fails and `reclassify-baseline` exits without
+changes. Changing the period needs a new policy version. With no period
+declared or saved, the assumptions apply to all work and the self-check warns.
+
+The `baseline_coverage` self-check compares the profile with the placements
+Galaxy recorded. It warns when the profile matches nothing, when a baseline
+runner recorded destinations that are not listed, and when Kubernetes ran pods
+for a baseline runner. Classification happens as Galaxy records arrive, so
+after correcting the profile run `rainstone reclassify-baseline`: it takes the
+collector's lease, re-applies the profile to retained Galaxy records whose
+placement no provider observation establishes, and recalculates. Work the
+corrected profile no longer covers loses its baseline association and becomes
+unavailable rather than zero; placement that was never observed is not
+reconstructed. Server pricing stays separate from that relationship: a
 job can add a known-zero amount of extra compute even when the server's own
 price is unavailable, and neither uptime nor a zero is invented when placement
 or policy is unknown.

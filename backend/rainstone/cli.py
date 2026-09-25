@@ -88,6 +88,11 @@ def main() -> None:
         "mark-installed", help="Record that this release's initialization completed"
     )
 
+    commands.add_parser(
+        "reclassify-baseline",
+        help="Re-apply the baseline profile to retained Galaxy execution records and recalculate",
+    )
+
     heartbeat = commands.add_parser(
         "heartbeat", help="Check that the collector loop wrote a recent heartbeat"
     )
@@ -209,6 +214,23 @@ def main() -> None:
                 flush=True,
             )
             time.sleep(args.interval)
+
+    if args.command == "reclassify-baseline":
+        from rainstone.collector import (
+            BaselinePolicyConflict,
+            CollectorLeaseUnavailable,
+            reclassify,
+        )
+
+        try:
+            _print(reclassify())
+        except CollectorLeaseUnavailable as error:
+            _print({"status": "lease_unavailable", "detail": str(error)})
+            sys.exit(75)
+        except BaselinePolicyConflict as error:
+            _print({"status": "policy_conflict", "detail": str(error)})
+            sys.exit(1)
+        return
 
     if args.command == "heartbeat":
         import time

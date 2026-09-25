@@ -86,3 +86,17 @@ def test_a_half_configured_source_is_rejected() -> None:
 def test_an_unknown_source_privilege_mode_is_rejected() -> None:
     with pytest.raises(ValidationError, match="galaxy_source_privilege"):
         Settings(auth_mode="development", demo_data=True, galaxy_source_privilege="trust-me")
+
+
+def test_a_baseline_period_needs_a_start_before_its_end() -> None:
+    from datetime import UTC, datetime
+
+    base = {"auth_mode": "development", "demo_data": True}
+    with pytest.raises(ValueError, match="EFFECTIVE_FROM"):
+        Settings(**base, baseline_effective_to=datetime(2026, 9, 22, tzinfo=UTC))
+    with pytest.raises(ValueError, match="after its start"):
+        Settings(
+            **base,
+            baseline_effective_from=datetime(2026, 9, 22, tzinfo=UTC),
+            baseline_effective_to=datetime(2026, 9, 21, tzinfo=UTC),
+        )

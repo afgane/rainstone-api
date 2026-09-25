@@ -125,7 +125,14 @@ baseline:
   zone: ""
   nodeNames: ""                 # what Kubernetes calls the same machine
   destinations: ""              # comma-separated Galaxy destination IDs
+  # Galaxy local runners only. Kubernetes placement comes from pod observation,
+  # and a runner matches only work recorded without a destination.
   runners: local
+  # When the unchanged size and uptime assumptions start (and stop) holding, as
+  # ISO 8601 with an offset. Saved with the policy version on first use; a
+  # different period needs a new policyVersion.
+  effectiveFrom: ""
+  effectiveTo: ""
 
 catalog:
   feedUrl: ""                   # anonymous, versioned artifact feed

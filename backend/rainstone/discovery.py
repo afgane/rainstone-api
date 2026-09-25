@@ -450,14 +450,19 @@ def _batch_runner(api: KubernetesApi, namespace: str, release: str) -> dict[str,
     }
 
 
-# Runners that provision their own capacity. Work they run is never covered by
-# the already-running server, so naming them in the baseline would report a
-# separately billed VM as adding no compute charge.
-PROVISIONING_RUNNERS = ("gcp_batch", "aws_batch", "godocker", "pulsar")
+# Only Galaxy's local runner executes inside the Galaxy server process's own
+# machine. Every other runner places work somewhere else: Batch and Pulsar
+# provision their own capacity, and Kubernetes schedules pods whose placement
+# on the server is established per pod by Kubernetes observation, never by the
+# runner's name.
+HOST_RUNNER_LOAD = "galaxy.jobs.runners.local:"
 
 
-def _runners(api: KubernetesApi, namespace: str, release: str) -> Resolved:
-    """Name the runners that execute on the Galaxy server already running."""
+def _baseline_execution(api: KubernetesApi, namespace: str, release: str) -> dict[str, Resolved]:
+    """Name the runners and destinations that execute on the Galaxy server.
+
+    A destination's ID and runner are read; its parameters are not.
+    """
     maps = api.try_get(f"/api/v1/namespaces/{namespace}/configmaps/{release}-configs")
     document = ((maps or {}).get("data") or {}).get("job_conf.yml")
     try:
@@ -468,16 +473,29 @@ def _runners(api: KubernetesApi, namespace: str, release: str) -> Resolved:
     local = sorted(
         name
         for name, config in configured.items()
-        if not any(
-            marker in str((config or {}).get("load", "")) for marker in PROVISIONING_RUNNERS
-        )
+        if HOST_RUNNER_LOAD in str((config or {}).get("load", ""))
     )
     if not local:
-        return unresolved(
-            "Galaxy's configured runners could not be read, or all of them provision their own "
-            "capacity; name the baseline runners explicitly"
+        reason = (
+            "Galaxy's configured runners could not be read, or none of them is the local runner; "
+            "name the baseline runners explicitly"
         )
-    return resolved(",".join(local), "Galaxy job configuration")
+        return {"baseline_runners": unresolved(reason), "baseline_destinations": unresolved(reason)}
+    environments = ((parsed or {}).get("execution") or {}).get("environments") or {}
+    destinations = sorted(
+        name
+        for name, config in environments.items()
+        if isinstance(config, dict) and config.get("runner") in local
+    )
+    return {
+        "baseline_runners": resolved(",".join(local), "Galaxy job configuration"),
+        "baseline_destinations": resolved(",".join(destinations), "Galaxy job configuration")
+        if destinations
+        else unresolved(
+            "no statically configured destination uses the local runner; if destinations are "
+            "assigned dynamically, name the ones that run on this server explicitly"
+        ),
+    }
 
 
 def _storage(api: KubernetesApi, namespace: str, release: str) -> tuple[Resolved, list[str]]:
@@ -593,7 +611,7 @@ def discover(
         fields["baseline_policy_version"] = unresolved(
             "the host descriptor is incomplete, so no baseline accounting policy is emitted"
         )
-    fields["baseline_runners"] = _runners(api, namespace_name, release_name)
+    fields.update(_baseline_execution(api, namespace_name, release_name))
 
     storage_class, storage_notes = _storage(api, namespace_name, release_name)
     fields["storage_class"] = storage_class

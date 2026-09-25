@@ -16,10 +16,11 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from rainstone.adapters.galaxy_db import discover_capabilities
+from rainstone.baseline import BaselineProfile, saved_policy_conflict
 from rainstone.catalog import coverage as catalog_coverage
 from rainstone.config import Settings, get_settings
 from rainstone.costing import CALCULATION_VERSION
@@ -27,8 +28,11 @@ from rainstone.enrollment import configured_owners, source_engine
 from rainstone.models import (
     CapabilityReport,
     CostRevision,
+    DeploymentPolicy,
+    ExecutionAttempt,
     IngestionState,
     InstallationRecord,
+    Job,
     ObservationGap,
     SourceBinding,
     Tenant,
@@ -309,8 +313,121 @@ def _baseline(session: Session, settings: Settings) -> list[Check]:
                 "destinations": list(settings.baseline_destination_list),
                 "runners": list(settings.baseline_runner_list),
             },
-        )
+        ),
+        *_baseline_period(session, settings),
+        *_baseline_coverage(session, settings),
     ]
+
+
+def _baseline_period(session: Session, settings: Settings) -> list[Check]:
+    """Say which period the baseline assumptions are applied to, or that none is set."""
+    tenant = session.scalar(select(Tenant).where(Tenant.slug == settings.tenant_slug))
+    saved = session.scalar(
+        select(DeploymentPolicy).where(
+            DeploymentPolicy.tenant_id == tenant.id,
+            DeploymentPolicy.version == settings.baseline_policy_version,
+        )
+    ) if tenant else None
+    conflict = saved_policy_conflict(saved, settings)
+    if conflict:
+        return [Check(
+            "baseline_period", "fail",
+            f"Nothing is classified as baseline work: {conflict}.",
+        )]
+    start = saved.effective_from if saved else settings.baseline_effective_from
+    end = saved.effective_to if saved else settings.baseline_effective_to
+    if start is None:
+        return [Check(
+            "baseline_period", "warn",
+            "The baseline policy declares no start, so its unchanged size and uptime "
+            "assumptions are applied to all work, including work from before they held. "
+            "Set RAINSTONE_BASELINE_EFFECTIVE_FROM.",
+        )]
+    return [Check(
+        "baseline_period", "pass",
+        f"Baseline assumptions apply from {start.isoformat()} to "
+        f"{end.isoformat() if end else 'open'}.",
+        {"effective_from": start.isoformat(), "effective_to": end.isoformat() if end else None,
+         "saved": saved is not None},
+    )]
+
+
+def _baseline_coverage(session: Session, settings: Settings) -> list[Check]:
+    """Compare the baseline profile with the placements Galaxy actually recorded.
+
+    A profile can be valid and still match nothing: a named destination that is
+    not listed leaves its work unavailable rather than attributed, and a runner
+    Kubernetes schedules pods for would declare that work free without any
+    placement evidence.
+    """
+    tenant = session.scalar(select(Tenant).where(Tenant.slug == settings.tenant_slug))
+    if tenant is None:
+        return []
+    profile = BaselineProfile(
+        version=settings.baseline_policy_version or "",
+        resource_uid=settings.baseline_resource_uid or "",
+        destinations=settings.baseline_destination_list,
+        runners=settings.baseline_runner_list,
+    )
+    placements = session.execute(
+        select(Job.runner, Job.destination, func.count())
+        .where(Job.tenant_id == tenant.id, Job.runner.is_not(None))
+        .group_by(Job.runner, Job.destination)
+        .order_by(Job.runner, Job.destination)
+    ).all()
+    if not placements:
+        return []
+    covered = sum(count for runner, destination, count in placements
+                  if profile.covers_placement(runner, destination))
+    kubernetes_runners = sorted(set(session.scalars(
+        select(Job.runner)
+        .join(ExecutionAttempt, ExecutionAttempt.job_id == Job.id)
+        .where(
+            Job.tenant_id == tenant.id,
+            Job.runner.in_(profile.runners),
+            ExecutionAttempt.source_attempt_id.like("k8s:%"),
+        )
+    )))
+    unlisted = {
+        destination: count for runner, destination, count in placements
+        if destination and runner in profile.runners and runner not in kubernetes_runners
+        and not profile.covers_placement(runner, destination)
+    }
+    findings = []
+    if not covered:
+        findings.append("the profile matches none of the recorded placements")
+    if unlisted:
+        findings.append(
+            "baseline runners recorded these destinations, which are not listed in "
+            "RAINSTONE_BASELINE_DESTINATIONS, so their work stays unavailable: "
+            + ", ".join(f"{name} ({count} jobs)" for name, count in sorted(unlisted.items()))
+        )
+    if kubernetes_runners:
+        findings.append(
+            "Kubernetes ran pods for baseline runners "
+            + ", ".join(kubernetes_runners)
+            + "; placement for that work must come from pod observations, so remove them "
+            "from RAINSTONE_BASELINE_RUNNERS"
+        )
+    facts = {
+        "covered_jobs": covered,
+        "placements": [
+            {"runner": runner, "destination": destination, "jobs": count,
+             "covered": profile.covers_placement(runner, destination)}
+            for runner, destination, count in placements
+        ],
+    }
+    if not findings:
+        return [Check(
+            "baseline_coverage", "pass",
+            f"The baseline profile covers {covered} recorded jobs.", facts,
+        )]
+    return [Check(
+        "baseline_coverage", "warn",
+        "Baseline profile and recorded placements disagree: " + "; ".join(findings)
+        + ". After correcting it, run `rainstone reclassify-baseline`.",
+        facts,
+    )]
 
 
 def _catalog(session: Session, settings: Settings) -> list[Check]:
@@ -335,8 +452,10 @@ def _catalog(session: Session, settings: Settings) -> list[Check]:
     age_days = (datetime.now(UTC) - observed).days
     status = "pass" if settings.catalog_feed_url and age_days <= 7 else "warn"
     detail = (
-        f"Active catalog {facts['active_catalog_id']} covers {len(facts['supported'])} "
-        f"shape/region combinations; prices were observed {age_days} days ago."
+        f"Active catalog {facts['active_catalog_id']} has {facts['active_rate_count']} rates, "
+        f"observed {age_days} days ago. Across {facts['retained_rate_count']} retained rates "
+        f"from all catalog versions, {facts['distinct_combinations']} distinct shape, region "
+        "and purchase-model combinations can be priced."
     )
     if not settings.catalog_feed_url:
         detail += " No refresh feed is configured, so this is a pinned snapshot."
@@ -351,7 +470,9 @@ def _catalog(session: Session, settings: Settings) -> list[Check]:
                 "imported_at": facts["imported_at"],
                 "signature_key_id": facts["signature_key_id"],
                 "source_age_days": age_days,
-                "supported_combinations": len(facts["supported"]),
+                "active_rate_count": facts["active_rate_count"],
+                "distinct_combinations": facts["distinct_combinations"],
+                "retained_rate_count": facts["retained_rate_count"],
                 "regions": sorted({item["region"] for item in facts["supported"]}),
                 "provenance": facts["provenance"],
             },

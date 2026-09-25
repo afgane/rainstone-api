@@ -41,6 +41,8 @@ export interface Meta {
   priced_subtotal: string | null;
   observation_window: { from: string | null; to: string | null; timezone: string; semantics: string; mode: string };
   coverage: { jobs: number; priced: number; incomplete: number; known_zero: number; temporally_unattributed: number };
+  /** Jobs a dated report leaves out because their cost has no usable timing. */
+  undated: { job_count: number; amount: string | null; incomplete: number } | null;
 }
 
 export interface Summary extends Meta {
@@ -50,11 +52,27 @@ export interface Summary extends Meta {
   unpriced_job_count: number;
   known_zero_job_count: number;
   failed_spend: string;
-  retried_spend: string;
+  failed_job_count: number;
+  failed_incomplete_job_count: number;
+  /** The whole cost of jobs that had a repeat attempt. */
+  repeated_job_spend: string;
+  repeated_job_count: number;
+  /** Only what the repeat attempts themselves used. */
+  repeat_attempt_spend: string;
+  repeat_attempt_shared_spend: string;
+  repeat_attempt_spend_complete: boolean;
   baseline_infrastructure_amount: string | null;
+  /** When the server was actually observed, not the window that was asked for. */
+  baseline_infrastructure_observed: { from: string; to: string } | null;
   can_view_infrastructure: boolean;
   demo: boolean;
   demo_period: { from: string; to: string } | null;
+  imported_snapshot: {
+    captured_at: string | null;
+    source_cutoffs: Record<string, string> | null;
+    snapshot_digest: string | null;
+    label: string | null;
+  } | null;
 }
 
 export interface Job {
@@ -63,7 +81,21 @@ export interface Job {
   owner: string; owner_id: string; state: string; runner: string | null;
   destination: string | null; created_at: string; amount: string | null; currency: string;
   quality: string; reason: string; cost_lines: number; attempt_count: number;
+  repeat_attempt_count: number; attempt_evidence: "provider" | "galaxy_record" | "none";
   capacities: string[]; temporally_unattributed: boolean;
+}
+
+export interface JobList {
+  items: Job[]; total: number; limit: number; offset: number;
+  /** Outside the period's totals; shown beside them, never counted in them. */
+  undated_items: Job[];
+  meta: Meta;
+}
+
+export interface Infrastructure {
+  items: Array<Record<string, string>>; amount: string | null; scope: string;
+  allocation_reason: string; observation_window: Record<string, string>;
+  observed_coverage: { from: string; to: string } | null;
 }
 
 export interface Invocation {
@@ -95,7 +127,7 @@ export interface DailyItem {
 
 export interface Freshness {
   overall_status: string;
-  sources: Array<{ source: string; status: string; last_success_at: string; error: string | null }>;
+  sources: Array<{ source: string; status: string; last_success_at: string | null; error: string | null }>;
   observation_gaps: Array<{ source: string; kind: string; detected_at: string; recoverable: boolean; detail: string }>;
 }
 
@@ -255,7 +287,7 @@ async function loadPinnedReport(state: ReportState, signal?: AbortSignal) {
   const snapshotState = { ...state, revision: summary.revision_id || state.revision };
   const query = queryString(snapshotState);
   const common = [
-    get<{ items: Job[]; total: number; limit: number; offset: number; meta: Meta }>(`/jobs?${query}`, signal),
+    get<JobList>(`/jobs?${query}`, signal),
     get<Freshness>("/freshness", signal),
     get<Me>("/me", signal),
   ] as const;
@@ -269,11 +301,30 @@ async function loadPinnedReport(state: ReportState, signal?: AbortSignal) {
     : state.view === "runs" ? get<{ items: Invocation[]; meta: Meta }>(`/invocations?${query}`, signal)
     : state.view === "daily" ? get<{ items: DailyItem[]; meta: Meta }>(`/daily?${query}`, signal)
     : state.view === "users" ? get<{ items: GroupItem[]; meta: Meta }>(`/users?${query}`, signal)
-    : state.view === "server" ? get<{ items: Array<Record<string, string>>; amount: string | null; scope: string; allocation_reason: string; observation_window: Record<string, string> }>(`/infrastructure?${query}`, signal)
+    : state.view === "server" ? get<Infrastructure>(`/infrastructure?${query}`, signal)
     : state.view === "status" ? get<Status>("/status", signal)
     : Promise.resolve(null);
   const [jobs, freshness, me, view] = await Promise.all([...common, viewRequest]);
   return { summary, jobs, freshness, me, view };
+}
+
+/** Report sources, as opposed to the price catalog, which is versioned separately. */
+const COLLECTION_SOURCES = new Set(["galaxy_db", "kubernetes", "gcp_batch"]);
+
+/**
+ * The instant every report source had been collected through: the oldest of
+ * their last successes. A missing success leaves the cutoff unknown. The
+ * server already marks a source stale once its last success is too old.
+ */
+export function collectionCutoff(freshness: Freshness | null) {
+  const sources = (freshness?.sources || []).filter(source => COLLECTION_SOURCES.has(source.source));
+  if (!sources.length || sources.some(source => !source.last_success_at)) {
+    return { cutoff: null, stale: true };
+  }
+  const cutoff = sources
+    .map(source => source.last_success_at as string)
+    .reduce((oldest, value) => (new Date(value) < new Date(oldest) ? value : oldest));
+  return { cutoff, stale: sources.some(source => source.status !== "healthy") };
 }
 
 export function diagnosticsUrl(): string {

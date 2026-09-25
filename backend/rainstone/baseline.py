@@ -18,7 +18,8 @@ from rainstone.adapters.contracts import (
     NormalizedLifetime,
     NormalizedSegment,
 )
-from rainstone.models import CapacityRelationship
+from rainstone.config import Settings
+from rainstone.models import CapacityRelationship, DeploymentPolicy
 
 TIMING_METHOD = "configured_baseline_occupancy"
 
@@ -39,11 +40,27 @@ class BaselineProfile:
     runners: tuple[str, ...] = ("local",)
     evidence: str = ""
     assumptions: dict = field(default_factory=dict)
+    # The half-open period the policy's assumptions hold for; open when unset.
+    effective_from: datetime | None = None
+    effective_to: datetime | None = None
 
     def covers(self, job: NormalizedJob) -> bool:
-        if job.destination and job.destination in self.destinations:
+        return self.covers_placement(job.runner, job.destination)
+
+    def covers_placement(self, runner: str | None, destination: str | None) -> bool:
+        """Whether this configured placement is the baseline server.
+
+        A named destination must be listed explicitly; a runner alone places
+        only work that Galaxy recorded without a destination.
+        """
+        if destination and destination in self.destinations:
             return True
-        return bool(job.runner and job.runner in self.runners and not job.destination)
+        return bool(runner and runner in self.runners and not destination)
+
+    def applies_at(self, instant: datetime) -> bool:
+        return (self.effective_from is None or instant >= self.effective_from) and (
+            self.effective_to is None or instant < self.effective_to
+        )
 
 
 def _hint(job: NormalizedJob, key: str) -> Decimal | None:
@@ -62,7 +79,7 @@ def classify_job(job: NormalizedJob, profile: BaselineProfile | None) -> Normali
     attempts: list[NormalizedAttempt] = []
     for attempt in job.attempts:
         start, end = _occupancy(attempt)
-        if start is None or attempt.lifetimes:
+        if start is None or attempt.lifetimes or not profile.applies_at(start):
             attempts.append(attempt)
             continue
         lifetime = NormalizedLifetime(
@@ -101,3 +118,18 @@ def classify_job(job: NormalizedJob, profile: BaselineProfile | None) -> Normali
         )
         attempts.append(replace(attempt, lifetimes=(lifetime,)))
     return replace(job, attempts=tuple(attempts))
+
+
+def saved_policy_conflict(saved: DeploymentPolicy | None, settings: Settings) -> str | None:
+    """Why a declared period cannot be applied, when it disagrees with the saved one."""
+    if saved is None or settings.baseline_effective_from is None:
+        return None
+    declared = (settings.baseline_effective_from, settings.baseline_effective_to)
+    if declared == (saved.effective_from, saved.effective_to):
+        return None
+    return (
+        f"baseline policy {saved.version} was saved for "
+        f"{saved.effective_from.isoformat()} to "
+        f"{saved.effective_to.isoformat() if saved.effective_to else 'open'}, "
+        "but a different period is configured; declare a new policy version to change it"
+    )

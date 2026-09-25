@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from sqlalchemy import or_, select, text
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from rainstone.models import (
@@ -22,7 +22,7 @@ from rainstone.models import (
     ResourceSegment,
 )
 
-CALCULATION_VERSION = "phase2b-v1"
+CALCULATION_VERSION = "phase2b-v2"
 MINIMUM_BILLED_SECONDS = Decimal("60")
 
 
@@ -142,7 +142,13 @@ def calculate_lifetime(
         for start, end in zip(points, points[1:], strict=False):
             active = _active_price(prices, start)
             if active is None:
-                return _unavailable("No applicable machine price was found.", Quality.unpriced)
+                earliest = min(value.effective_from for value in prices if value.effective_from)
+                return _unavailable(
+                    "No published price covers this machine and region when it ran: the "
+                    f"earliest takes effect {earliest.isoformat()}, and a later price is "
+                    "never applied to earlier work.",
+                    Quality.unpriced,
+                )
             segment_seconds = Decimal(str((end - start).total_seconds()))
             charged_seconds = segment_seconds * billed_seconds / observed
             segment_amount = charged_seconds / Decimal("3600") * active.hourly_rate
@@ -244,19 +250,17 @@ def _ensure_generation(session: Session, tenant_id: uuid.UUID) -> int:
 
 
 def _applicable_prices(session: Session, lifetime: ResourceLifetime) -> list[PriceVersion]:
+    """Every price for the lifetime's shape; only those in effect while it ran apply.
+
+    Prices that take effect later are kept so an unpriced lifetime can say that
+    its shape is priced, just not for when it ran.
+    """
     statement = select(PriceVersion).where(
         PriceVersion.provider == lifetime.provider,
         PriceVersion.region == lifetime.region,
         PriceVersion.machine_type == lifetime.machine_type,
         PriceVersion.purchase_model == lifetime.purchase_model,
     )
-    if lifetime.observed_end is not None:
-        statement = statement.where(
-            or_(
-                PriceVersion.effective_from.is_(None),
-                PriceVersion.effective_from < lifetime.observed_end,
-            )
-        )
     return list(session.scalars(statement.order_by(PriceVersion.effective_from.asc().nullsfirst())))
 
 

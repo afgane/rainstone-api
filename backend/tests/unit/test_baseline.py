@@ -61,3 +61,23 @@ def test_unmapped_destination_is_left_for_provider_evidence() -> None:
 def test_absent_policy_leaves_capacity_unclassified() -> None:
     classified = classify_job(job(), None)
     assert classified.attempts[0].lifetimes == ()
+
+
+def test_a_named_destination_is_not_placed_by_its_runner_alone() -> None:
+    profile = BaselineProfile(version="v", resource_uid="vm", destinations=(), runners=("local",))
+    assert classify_job(job(destination="local"), profile).attempts[0].lifetimes == ()
+    assert classify_job(job(destination=None), profile).attempts[0].lifetimes
+
+
+def test_work_outside_the_policy_period_is_not_classified() -> None:
+    later = BaselineProfile(
+        version="v", resource_uid="vm", destinations=("local",),
+        effective_from=datetime(2026, 9, 22, tzinfo=UTC),
+    )
+    assert classify_job(job(), later).attempts[0].lifetimes == ()
+    earlier = BaselineProfile(
+        version="v", resource_uid="vm", destinations=("local",),
+        effective_to=datetime(2026, 9, 21, 12, tzinfo=UTC),
+    )
+    # The period is half-open, so work starting at its end is outside it.
+    assert classify_job(job(), earlier).attempts[0].lifetimes == ()

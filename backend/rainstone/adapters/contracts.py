@@ -14,6 +14,11 @@ from rainstone.models import CapacityRelationship
 
 CONTRACT_VERSION = 2
 
+# Galaxy's own record of a job's execution. Provider adapters observe the same
+# execution separately, so this is evidence about an attempt, not an attempt of
+# its own whenever provider evidence exists.
+GALAXY_RECORD_ATTEMPT_ID = "galaxy-0"
+
 
 @dataclass(frozen=True)
 class NormalizedSegment:

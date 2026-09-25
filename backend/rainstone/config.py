@@ -1,3 +1,4 @@
+from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 
@@ -82,6 +83,10 @@ class Settings(BaseSettings):
     baseline_node_names: str = ""
     baseline_destinations: str = ""
     baseline_runners: str = "local"
+    # The half-open period the baseline assumptions hold for. Once declared it
+    # is saved with the policy version; changing it means a new version.
+    baseline_effective_from: datetime | None = None
+    baseline_effective_to: datetime | None = None
 
     # Collector scheduling.
     collect_interval_seconds: int = 30
@@ -222,6 +227,18 @@ class Settings(BaseSettings):
             )
         if self.baseline_policy_version and not self.baseline_resource_uid:
             raise ValueError("A baseline policy requires RAINSTONE_BASELINE_RESOURCE_UID")
+        if self.baseline_effective_to and not self.baseline_effective_from:
+            raise ValueError(
+                "RAINSTONE_BASELINE_EFFECTIVE_TO needs RAINSTONE_BASELINE_EFFECTIVE_FROM"
+            )
+        if (
+            self.baseline_effective_from and self.baseline_effective_to
+            and self.baseline_effective_to <= self.baseline_effective_from
+        ):
+            raise ValueError("RAINSTONE_BASELINE_EFFECTIVE_TO must be after its start")
+        for value in (self.baseline_effective_from, self.baseline_effective_to):
+            if value is not None and value.tzinfo is None:
+                raise ValueError("Baseline policy dates need an explicit UTC offset")
         if self.catalog_require_signature and not self.catalog_trusted_keys:
             raise ValueError(
                 "RAINSTONE_CATALOG_REQUIRE_SIGNATURE needs RAINSTONE_CATALOG_TRUSTED_KEYS; "

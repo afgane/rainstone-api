@@ -33,6 +33,8 @@ class ReportQuery(BaseModel):
     revision: str | None = None
     limit: int = 50
     offset: int = 0
+    # The undated list pages on its own, beside the period's results.
+    undated_offset: int = 0
     sort: str = "created_at"
     direction: Literal["asc", "desc"] = "desc"
 
@@ -69,6 +71,7 @@ def report_query(
     revision: str | None = None,
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
+    undated_offset: int = Query(default=0, ge=0),
     sort: str = Query(default="created_at", max_length=40),
     direction: Literal["asc", "desc"] = "desc",
 ) -> ReportQuery:

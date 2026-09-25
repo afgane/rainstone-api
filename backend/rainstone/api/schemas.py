@@ -26,6 +26,14 @@ class Coverage(APIModel):
     temporally_unattributed: int
 
 
+class UndatedEvidence(APIModel):
+    """Jobs a dated report leaves out because their cost has no usable timing."""
+
+    job_count: int
+    amount: str | None
+    incomplete: int
+
+
 class ReportMeta(APIModel):
     basis: Literal["additional", "allocated"]
     currency: Literal["USD"]
@@ -36,6 +44,7 @@ class ReportMeta(APIModel):
     as_of: datetime | None
     priced_subtotal: str | None
     coverage: Coverage
+    undated: UndatedEvidence | None = None
 
 
 class SummaryResponse(ReportMeta):
@@ -45,11 +54,19 @@ class SummaryResponse(ReportMeta):
     unpriced_job_count: int
     known_zero_job_count: int
     failed_spend: str
-    retried_spend: str
+    failed_job_count: int
+    failed_incomplete_job_count: int
+    repeated_job_spend: str
+    repeated_job_count: int
+    repeat_attempt_spend: str
+    repeat_attempt_shared_spend: str
+    repeat_attempt_spend_complete: bool
     baseline_infrastructure_amount: str | None
+    baseline_infrastructure_observed: dict[str, str] | None = None
     can_view_infrastructure: bool
     demo: bool
     demo_period: dict[str, str] | None = None
+    imported_snapshot: dict[str, Any] | None = None
 
 
 class JobItem(APIModel):
@@ -71,6 +88,9 @@ class JobItem(APIModel):
     reason: str
     cost_lines: int
     attempt_count: int
+    repeat_attempt_count: int
+    attempt_evidence: Literal["provider", "galaxy_record", "none"]
+    observation_count: int
     capacities: list[str]
     unattributed_amount: str
     temporally_unattributed: bool
@@ -82,6 +102,8 @@ class JobListResponse(APIModel):
     total: int
     limit: int
     offset: int
+    undated_items: list[JobItem] = []
+    undated_offset: int = 0
     meta: ReportMeta
 
 
@@ -200,6 +222,7 @@ class InfrastructureResponse(APIModel):
     allocation_supported: bool
     allocation_reason: str
     observation_window: dict[str, Any]
+    observed_coverage: dict[str, str] | None = None
     revision_id: str | None
     as_of: datetime | None
 

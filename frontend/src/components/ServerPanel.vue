@@ -1,18 +1,11 @@
 <script setup lang="ts">
-import { formatCost, SERVER_EXPLANATION } from "../vocabulary";
+import type { Infrastructure } from "../api";
+import { formatCost, formatDateTime, SERVER_EXPLANATION } from "../vocabulary";
 
-defineProps<{
-  server: {
-    items?: Array<Record<string, string>>;
-    amount?: string | null;
-    allocation_reason?: string;
-    observation_window?: Record<string, string>;
-  } | null;
-}>();
+const props = defineProps<{ server: Infrastructure | null; timezone: string }>();
 
-function window(server: Record<string, string> | undefined): string {
-  if (!server?.from || !server?.to) return "the observed window";
-  return `${new Date(server.from).toLocaleString()} – ${new Date(server.to).toLocaleString()}`;
+function span(from: string, to: string): string {
+  return `${formatDateTime(from, props.timezone)} – ${formatDateTime(to, props.timezone)}`;
 }
 </script>
 
@@ -23,7 +16,9 @@ function window(server: Record<string, string> | undefined): string {
     </div>
     <p class="quiet-amount">
       {{ formatCost(server?.amount) }}
-      <small>Observed {{ window(server?.observation_window) }}</small>
+      <small>{{ server?.observed_coverage
+        ? `Observed ${span(server.observed_coverage.from, server.observed_coverage.to)}`
+        : "No server observations available" }}</small>
       <small>This is the whole server. It is not filtered by the tools or runs you selected,
         and it is never added to run costs.</small>
     </p>
@@ -35,8 +30,7 @@ function window(server: Record<string, string> | undefined): string {
           <tr v-for="item in server?.items || []" :key="item.id">
             <td>{{ item.resource_uid }}</td>
             <td>{{ item.machine_type }} · {{ item.region }}</td>
-            <td>{{ new Date(item.observed_start).toLocaleString() }} –
-              {{ new Date(item.observed_end).toLocaleString() }}</td>
+            <td>{{ span(item.observed_start, item.observed_end) }}</td>
             <td>{{ formatCost(item.amount) }}</td>
           </tr>
         </tbody>

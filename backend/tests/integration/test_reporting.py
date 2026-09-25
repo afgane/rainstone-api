@@ -142,15 +142,22 @@ def test_daily_boundaries_price_change_and_completed_mode(client) -> None:
     assert Decimal(completed_daily["items"][0]["amount"]) == Decimal(completed["amount"])
 
 
-def test_dated_reports_retain_unknown_work_and_daily_coverage(client) -> None:
+def test_dated_reports_set_untimed_work_beside_the_period(client) -> None:
     auth = headers("bob")
     query = "search=21&from=2026-09-19T00:00:00Z&to=2026-09-21T00:00:00Z"
     jobs = client.get(f"/api/jobs?{query}", headers=auth).json()
     daily = client.get(f"/api/daily?{query}", headers=auth).json()
-    assert [item["source_id"] for item in jobs["items"]] == ["21"]
-    assert jobs["items"][0]["temporally_unattributed"] is True
-    assert jobs["meta"]["coverage"]["temporally_unattributed"] == 1
+    summary = client.get(f"/api/summary?{query}", headers=auth).json()
+    # Work with no usable timing belongs to no period, but stays visible.
+    assert jobs["items"] == []
+    assert [item["source_id"] for item in jobs["undated_items"]] == ["21"]
+    assert jobs["undated_items"][0]["temporally_unattributed"] is True
+    assert jobs["meta"]["undated"]["job_count"] == 1
+    assert summary["job_count"] == 0
     assert daily["temporally_unattributed_count"] == 1
+    undated = client.get("/api/jobs?search=21", headers=auth).json()
+    assert undated["meta"]["undated"] is None
+    assert undated["meta"]["coverage"]["temporally_unattributed"] == 1
 
 
 def test_tool_statistics_use_complete_full_job_cohort(client) -> None:
@@ -242,6 +249,13 @@ def test_current_snapshot_replays_all_report_scopes(client) -> None:
         assert response.status_code == 200
     infrastructure = client.get(f"/api/infrastructure?revision={pinned}", headers=auth).json()
     assert infrastructure["revision_id"] == pinned
+    assert infrastructure["observed_coverage"] is not None
+    # A window with no server observations says so rather than echoing the window.
+    empty = client.get(
+        "/api/summary?from=2020-01-01T00:00:00Z&to=2020-01-02T00:00:00Z", headers=auth
+    ).json()
+    assert empty["baseline_infrastructure_observed"] is None
+    assert empty["observation_window"]["from"].startswith("2020-01-01")
 
 
 def test_snapshot_detects_mutable_job_membership_and_infrastructure_facts(client) -> None:

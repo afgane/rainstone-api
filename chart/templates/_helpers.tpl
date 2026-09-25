@@ -117,6 +117,14 @@ different one.
   value: {{ .Values.baseline.destinations | quote }}
 - name: RAINSTONE_BASELINE_RUNNERS
   value: {{ .Values.baseline.runners | quote }}
+{{- with .Values.baseline.effectiveFrom }}
+- name: RAINSTONE_BASELINE_EFFECTIVE_FROM
+  value: {{ . | quote }}
+{{- end }}
+{{- with .Values.baseline.effectiveTo }}
+- name: RAINSTONE_BASELINE_EFFECTIVE_TO
+  value: {{ . | quote }}
+{{- end }}
 {{- end }}
 {{- end -}}
 

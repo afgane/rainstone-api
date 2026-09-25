@@ -52,6 +52,7 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .headline-explanation { margin: 0; color: #58585a; max-width: 65ch; }
 .inline-details { margin-top: .7rem; font-size: .9rem; }
 .inline-details summary { cursor: pointer; color: #165b91; }
+.panel > .inline-details { margin: 0; padding: .9rem 1.2rem 1rem; border-top: 1px solid #eef2f6; }
 .quiet { background: #f7fafc; }
 .quiet-amount { display: flex; flex-direction: column; gap: .2rem; margin: 0; padding: 1rem 1.2rem; font-size: 1.4rem; font-weight: 700; }
 .quiet-amount small { font-size: .85rem; font-weight: 400; color: #58585a; }
@@ -120,6 +121,7 @@ td small { display: block; max-width: 320px; color: #58585a; margin-top: .2rem; 
 .error { border-left: 4px solid #a31d1d; }
 .empty { padding: 2rem; color: #58585a; text-align: center; }
 .snapshot { margin: -.2rem 0 1rem; color: #58585a; font-size: .83rem; }
+.snapshot .stale { color: #a31d1d; font-weight: 600; }
 .trend { height: 160px; display: flex; align-items: end; gap: .65rem; padding: 1rem 1.2rem .8rem; overflow: hidden; }
 .trend button { flex: 1; min-width: 24px; max-width: 80px; border: 0; border-radius: .25rem .25rem 0 0; background: #3477a9; }
 .trend button:hover { background: #25537b; }

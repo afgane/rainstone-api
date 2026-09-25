@@ -2,9 +2,10 @@
 import { CircleDollarSign, Filter, RefreshCw } from "@lucide/vue";
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import {
-  ADVANCED_FILTERS, activeFilters, downloadExport, get, loadReport, periodOf, queryString,
-  type AdvancedFilter, type DailyItem, type Freshness, type GroupItem, type Invocation, type Job,
-  type Me, type ReportState, type Status, type Summary, type View,
+  ADVANCED_FILTERS, activeFilters, collectionCutoff, downloadExport, get, loadReport, periodOf,
+  queryString,
+  type AdvancedFilter, type DailyItem, type Freshness, type GroupItem, type Infrastructure,
+  type Invocation, type JobList, type Me, type ReportState, type Status, type Summary, type View,
 } from "./api";
 import DetailDialog from "./components/DetailDialog.vue";
 import OverviewPanel from "./components/OverviewPanel.vue";
@@ -14,8 +15,8 @@ import ServerPanel from "./components/ServerPanel.vue";
 import StatusPanel from "./components/StatusPanel.vue";
 import ToolRunsPanel from "./components/ToolRunsPanel.vue";
 import ToolsPanel from "./components/ToolsPanel.vue";
-import { describePeriod, PERIOD_LABELS, type PeriodId } from "./periods";
-import { formatCost, measureName } from "./vocabulary";
+import { describePeriod, PERIOD_LABELS, todayIn, type PeriodId } from "./periods";
+import { formatCost, formatDate, formatDateTime, measureName } from "./vocabulary";
 
 const VIEWS: View[] = ["overview", "runs", "tool-runs", "tools", "daily", "users", "server", "status"];
 const TITLES: Record<View, string> = {
@@ -55,7 +56,9 @@ function stateFromUrl(): ReportState {
 
 const state = reactive<ReportState>(stateFromUrl());
 const summary = ref<Summary | null>(null);
-const jobs = ref<{ items: Job[]; total: number; limit: number }>({ items: [], total: 0, limit: 50 });
+const jobs = ref<Pick<JobList, "items" | "undated_items" | "total" | "limit">>({
+  items: [], undated_items: [], total: 0, limit: 50,
+});
 const freshness = ref<Freshness | null>(null);
 const me = ref<Me | null>(null);
 const viewData = ref<unknown>(null);
@@ -89,15 +92,16 @@ const runs = computed(() => (state.view === "overview"
   ? (overviewParts.value[2]?.items || []) as Invocation[]
   : ((viewData.value as { items?: Invocation[] } | null)?.items || [])));
 const server = computed(() => (state.view === "server"
-  ? viewData.value as Record<string, never> | null
+  ? viewData.value as Infrastructure | null
   : null));
 const status = computed(() => (state.view === "status" ? viewData.value as Status | null : null));
 const serverWindow = computed(() => {
-  const observed = summary.value?.observation_window;
-  return observed?.from && observed?.to
-    ? `${new Date(observed.from).toLocaleDateString()} – ${new Date(observed.to).toLocaleDateString()}`
+  const observed = summary.value?.baseline_infrastructure_observed;
+  return observed
+    ? `${formatDate(observed.from, state.timezone)} – ${formatDate(observed.to, state.timezone)}`
     : null;
 });
+const collection = computed(() => collectionCutoff(freshness.value));
 const page = computed(() => Math.floor(state.offset / 50) + 1);
 
 function updateUrl(push = false) {
@@ -180,9 +184,21 @@ function showDemoPeriod() {
   const window = summary.value?.demo_period;
   if (!window) return;
   state.period = "custom";
-  state.fromTime = window.from.slice(0, 10);
-  state.toTime = window.to.slice(0, 10);
+  state.fromTime = todayIn(state.timezone, new Date(window.from));
+  state.toTime = todayIn(state.timezone, new Date(window.to));
   void refresh(true);
+}
+async function moreUndated() {
+  // Pinned to the loaded revision, so the added rows belong to the same snapshot.
+  const pinned = { ...state, revision: summary.value?.revision_id || state.revision };
+  try {
+    const next = await get<JobList>(
+      `/jobs?${queryString(pinned)}&undated_offset=${jobs.value.undated_items.length}`,
+    );
+    jobs.value = { ...jobs.value, undated_items: [...jobs.value.undated_items, ...next.undated_items] };
+  } catch (reason) {
+    error.value = reason instanceof Error ? reason.message : "Unable to load more tool runs";
+  }
 }
 function selectTool(toolId: string) {
   state.toolId = toolId; changeView("tool-runs");
@@ -254,6 +270,11 @@ onBeforeUnmount(() => {
     <div class="masthead-inner">
       <div class="brand"><CircleDollarSign :size="28" aria-hidden="true" /><span>Rainstone</span></div>
       <span v-if="summary?.demo" class="demo-badge">Demo data · synthetic scenarios included</span>
+      <span v-else-if="summary?.imported_snapshot" class="demo-badge">
+        Imported snapshot{{ summary.imported_snapshot.captured_at
+          ? ` · captured ${formatDateTime(summary.imported_snapshot.captured_at, state.timezone)}`
+          : "" }}
+      </span>
       <span v-else-if="me?.attribution" class="demo-badge">{{ me.attribution }}</span>
     </div>
   </header>
@@ -298,14 +319,16 @@ onBeforeUnmount(() => {
 
         <RunsPanel
           v-else-if="state.view === 'runs'"
-          :runs="runs" :period-label="periodLabel"
+          :runs="runs" :period-label="periodLabel" :timezone="state.timezone"
           @run="id => showDetail('runs', id)" @export="download"
         />
 
         <ToolRunsPanel
           v-else-if="state.view === 'tool-runs'"
-          :jobs="jobs.items" :total="jobs.total" :period-label="periodLabel"
+          :jobs="jobs.items" :undated-jobs="jobs.undated_items" :total="jobs.total"
+          :undated="summary.undated" :period-label="periodLabel" :timezone="state.timezone"
           @detail="id => showDetail('tool-runs', id)" @sort="sort" @export="download"
+          @more-undated="moreUndated"
         />
 
         <ToolsPanel
@@ -313,9 +336,12 @@ onBeforeUnmount(() => {
           :tools="tools" :period-label="periodLabel" @select="selectTool"
         />
 
-        <ServerPanel v-else-if="state.view === 'server'" :server="server" />
+        <ServerPanel v-else-if="state.view === 'server'" :server="server" :timezone="state.timezone" />
 
-        <StatusPanel v-else-if="state.view === 'status'" :status="status" :freshness="freshness" />
+        <StatusPanel
+          v-else-if="state.view === 'status'"
+          :status="status" :freshness="freshness" :timezone="state.timezone"
+        />
 
         <section v-else-if="state.view === 'daily'" class="panel">
           <div class="panel-heading">
@@ -374,7 +400,12 @@ onBeforeUnmount(() => {
 
         <div v-if="state.view !== 'status'" class="snapshot">
           {{ measureName(state.basis) }} · {{ describePeriod(period, state.timezone) }} ·
-          Updated {{ summary.as_of ? new Date(summary.as_of).toLocaleString() : "unavailable" }}
+          <span :class="{ stale: collection.stale }">
+            {{ collection.cutoff
+              ? `Collected through ${formatDateTime(collection.cutoff, state.timezone)}`
+              : "Collection time unknown" }}{{ collection.stale ? " (stale)" : "" }}
+          </span> ·
+          Calculated {{ summary.as_of ? formatDateTime(summary.as_of, state.timezone) : "unavailable" }}
           <button class="link-button" @click="refreshLatest">Refresh</button>
           <details class="inline-details">
             <summary>Technical details</summary>
@@ -392,6 +423,7 @@ onBeforeUnmount(() => {
 
   <DetailDialog
     :kind="detailKind" :detail="detail" :loading="detailLoading" :period-label="periodLabel"
+    :timezone="state.timezone"
     @close="closeDetail" @open="(kind, id) => showDetail(kind, id)"
   />
 </template>

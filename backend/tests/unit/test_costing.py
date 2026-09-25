@@ -116,3 +116,13 @@ def test_provider_billable_timing_is_complete_rather_than_approximate() -> None:
         lifetime(CapacityRelationship.dedicated, timing_method="provider_billable"), [], price()
     )[0]
     assert line.quality == Quality.complete
+
+
+def test_a_price_that_starts_after_the_work_is_never_applied_to_it() -> None:
+    later = PriceVersion(
+        hourly_rate=Decimal("0.13"), currency="USD", effective_from=START + timedelta(days=1)
+    )
+    lines = calculate_lifetime(lifetime(CapacityRelationship.dedicated), [], [later])
+    assert all(line.amount is None for line in lines)
+    assert {line.quality for line in lines} == {Quality.unpriced}
+    assert all(later.effective_from.isoformat() in line.reason for line in lines)

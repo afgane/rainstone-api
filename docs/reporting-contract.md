@@ -26,7 +26,16 @@ billable minimum is applied once and its uplift is distributed proportionally
 over the observed positive-duration lifetime. Local calendar buckets
 use the selected timezone through zoneinfo, including daylight-saving
 transitions. Open intervals use the fixed revision timestamp and are
-provisional. Amounts without usable timing remain temporally unattributed.
+provisional. A zero-duration interval is an instant: it belongs whole to the
+half-open range that contains it, so known-zero work that lasted no measurable
+time keeps its zero in exactly one period.
+
+Work whose cost evidence has no usable timing belongs to no period. A report
+without a date range includes it and counts it as temporally unattributed. A
+dated report leaves it out of totals, counts, rankings, workflow listings and
+CSV export, and describes it separately: `meta.undated` carries its job count,
+known subtotal and incomplete count, and the job list returns one page of it as
+`undated_items`, paged by `undated_offset` independently of `offset`. Job creation time is never substituted for cost timing.
 
 The completed mode selects successful completions in the interval, uses their
 full-job amounts, and places each total on its final successful execution
@@ -60,8 +69,47 @@ amount, shape, observed window, timing method and the attempts that shared it;
 and `attempts`, each with Galaxy outcome, provider outcome, exit code, task
 index and attempt ordinal. An attempt shows an amount only when it is the sole
 user of that lifetime; otherwise the row names the attempts sharing the charge
-so no report repeats a whole-VM amount. `cost_lines` counts charged lifetimes
-and `attempt_count` counts observed attempts; they differ for a same-VM retry.
+so no report repeats a whole-VM amount. `cost_lines` counts charged lifetimes.
+
+Galaxy and each provider observe the same execution separately, so observations
+are reconciled into logical attempts before anything is counted as a repeat.
+When provider evidence exists, Galaxy's own record describes one of those
+executions unless it carries a resource of its own. Parallel tasks of one
+submission are not repeats; a later ordinal of the same task, or a later
+submission of it, is. `attempt_count` counts logical attempts,
+`repeat_attempt_count` the repeats among them, `observation_count` the raw
+observations, and `attempt_evidence` says whether the count rests on provider
+observations or on Galaxy's record alone, which cannot show a repeat. In a job
+detail each attempt carries a `role` of `first`, `repeat` or `observation`.
+
+The summary reports failed work (`failed_spend`, with
+`failed_incomplete_job_count` for failed jobs still missing cost data) and two
+different repeat figures: `repeated_job_spend` is the whole cost of jobs that
+had a repeat attempt, and `repeat_attempt_spend` only what resources used
+solely by repeats cost. A resource shared by a first attempt and its repeat
+cannot be divided without a policy, so its amount is reported as
+`repeat_attempt_shared_spend` and `repeat_attempt_spend_complete` is false.
+A logical attempt with no resource evidence has a cost no line includes: its
+job is `partial`, its reason says so, and when it is a repeat inside the report
+period the repeat subtotal is incomplete. An attempt without timing counts as
+inside every period, so a missing cost never drops out of all of them.
+
+A job with no cost lines reports its evidence state, not an execution state:
+`in_progress` while it is queued or running, `not_started` when it is new or
+paused, and `unavailable` once it has finished. An unavailable job's reason says
+whether Galaxy recorded when it ran; recalculating alone cannot recover
+observations that were never collected.
+
+A price that takes effect after work ran is never applied to it. Such work is
+unpriced, and its reason names when the earliest published price takes effect.
+
+The summary distinguishes the requested window from what was observed:
+`observation_window` echoes the report bounds, while
+`baseline_infrastructure_observed` (and the infrastructure report's
+`observed_coverage`) is the span of server observations inside them, or null
+when there are none. A tenant restored from a captured snapshot carries an
+`imported_snapshot` capability, returned by the summary with its capture time,
+source cutoffs and digest; it is real data and is not marked as a demo.
 
 Raw job metrics are not part of the revision content digest: they reach reports
 only through attempts, lifetimes and job resource hints, which are covered.

@@ -13,12 +13,24 @@ galaxy:
 
 JOB_CONF = """
 runners:
+  local:
+    load: galaxy.jobs.runners.local:LocalJobRunner
   k8s:
     load: galaxy.jobs.runners.kubernetes:KubernetesJobRunner
   batch:
     load: galaxy.jobs.runners.gcp_batch:GCPBatchJobRunner
     project_id: anvil-and-terra-development
     region: us-east4
+execution:
+  default: k8s
+  environments:
+    local:
+      runner: local
+    k8s:
+      runner: k8s
+      k8s_namespace: galaxy
+    gcp_batch:
+      runner: batch
 """
 
 CLUSTER = {
@@ -163,9 +175,29 @@ def test_batch_is_read_from_the_runner_not_from_the_host_vm() -> None:
     assert values["baseline"]["region"] == "us-central1"
 
 
-def test_the_baseline_excludes_runners_that_provision_their_own_capacity() -> None:
-    """A Batch VM is separately billed, so Batch work is not existing capacity."""
-    assert run().values()["baseline"]["runners"] == "k8s"
+def test_the_baseline_names_only_work_that_runs_in_the_galaxy_server() -> None:
+    """A Batch VM is separately billed, and a pod's node is observed, not assumed."""
+    baseline = run().values()["baseline"]
+    assert baseline["runners"] == "local"
+    # The destinations using that runner are named, so work Galaxy records under
+    # a destination is matched explicitly rather than through its runner.
+    assert baseline["destinations"] == "local"
+
+
+def test_dynamically_assigned_destinations_are_a_reason_not_a_guess() -> None:
+    objects = dict(OBJECTS)
+    objects[f"/api/v1/namespaces/{NAMESPACE}/configmaps/{RELEASE}-configs"] = {
+        "data": {
+            "galaxy.yml": GALAXY_YAML,
+            "job_conf.yml": JOB_CONF.split("execution:")[0]
+            + "execution:\n  default: tpv\n  environments:\n    tpv:\n      runner: dynamic\n",
+        }
+    }
+    description = run(objects)
+
+    assert description.values()["baseline"]["runners"] == "local"
+    assert "destinations" not in description.values()["baseline"]
+    assert "assigned dynamically" in description.report()["unresolved"]["baseline_destinations"]
 
 
 def test_the_host_descriptor_comes_from_vm_metadata_without_kubernetes_labels() -> None:

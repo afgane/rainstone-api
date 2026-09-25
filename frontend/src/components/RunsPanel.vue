@@ -1,17 +1,10 @@
 <script setup lang="ts">
 import { Download } from "@lucide/vue";
 import type { Invocation } from "../api";
-import { formatCost, needsCostData, pluralize, runStatusLabel } from "../vocabulary";
+import { formatCost, formatDateTime, needsCostData, pluralize, runStatusLabel } from "../vocabulary";
 
-defineProps<{ runs: Invocation[]; periodLabel: string }>();
+defineProps<{ runs: Invocation[]; periodLabel: string; timezone: string }>();
 const emit = defineEmits<{ run: [id: string]; export: [] }>();
-
-function started(run: Invocation): string {
-  return new Date(run.started_at).toLocaleString(undefined, {
-    dateStyle: "medium",
-    timeStyle: "short",
-  });
-}
 </script>
 
 <template>
@@ -29,7 +22,7 @@ function started(run: Invocation): string {
         <button class="run-card" @click="emit('run', run.id)">
           <span class="run-title">
             <strong>{{ run.workflow_name }}</strong>
-            <small>{{ started(run) }}</small>
+            <small>{{ formatDateTime(run.started_at, timezone) }}</small>
           </span>
           <span class="run-meta">
             <span class="status" :data-status="run.run_status">{{ runStatusLabel(run.run_status) }}</span>

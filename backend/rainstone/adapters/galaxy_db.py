@@ -21,6 +21,7 @@ from sqlalchemy import Engine, text
 from sqlalchemy.engine import Connection
 
 from rainstone.adapters.contracts import (
+    GALAXY_RECORD_ATTEMPT_ID,
     NormalizedAttempt,
     NormalizedInvocation,
     NormalizedJob,
@@ -450,7 +451,7 @@ def _attempt_from_job(row: dict, metrics: dict[str, Decimal]) -> NormalizedAttem
     end = metrics.get("core.end_epoch")
     return NormalizedAttempt(
         job_source_id=row["source_id"],
-        source_attempt_id="galaxy-0",
+        source_attempt_id=GALAXY_RECORD_ATTEMPT_ID,
         runner=row["runner"] or "unassigned",
         outcome=row["state"],
         external_id=row["external_id"],

@@ -373,6 +373,15 @@ def coverage(session: Session) -> dict:
     priced_regions = sorted({row.region for row in rows})
     return {
         "active_catalog_id": version.catalog_id if version else None,
+        # Rows from earlier catalog versions stay, so they can price earlier
+        # work; counting them as the active catalog's shape would overstate it.
+        "active_rate_count": sum(
+            1 for row in rows if version and row.catalog_id == version.catalog_id
+        ),
+        "distinct_combinations": len({
+            (row.provider, row.region, row.purchase_model, row.machine_type) for row in rows
+        }),
+        "retained_rate_count": len(rows),
         "observed_at": version.observed_at.isoformat() if version else None,
         "imported_at": version.imported_at.isoformat() if version else None,
         "signature_key_id": version.signature_key_id if version else None,

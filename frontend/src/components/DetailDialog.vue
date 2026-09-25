@@ -2,8 +2,8 @@
 import { RefreshCw, X } from "@lucide/vue";
 import { computed, nextTick, ref, watch } from "vue";
 import {
-  capacityLabel, costExplanation, formatCost, jobStateLabel, needsCostData, pluralize,
-  qualityLabel, runStatusLabel,
+  capacityLabel, costExplanation, formatCost, formatDateTime, jobStateLabel, needsCostData,
+  pluralize, qualityLabel, runStatusLabel,
 } from "../vocabulary";
 
 const props = defineProps<{
@@ -11,6 +11,7 @@ const props = defineProps<{
   detail: Record<string, unknown> | null;
   loading: boolean;
   periodLabel: string;
+  timezone: string;
 }>();
 const emit = defineEmits<{ close: []; open: [kind: "runs" | "tool-runs", id: string] }>();
 
@@ -39,7 +40,9 @@ const runDiffers = computed(() => runTotal.value !== periodShare.value);
 const steps = computed(() => list("steps"));
 const children = computed(() => list("children"));
 const resources = computed(() => list("resources"));
-const attempts = computed(() => list("attempts"));
+// Galaxy's own record of an execution a provider also observed is evidence
+// about that attempt, not another attempt.
+const attempts = computed(() => list("attempts").filter(attempt => attempt.role !== "observation"));
 </script>
 
 <template>
@@ -59,7 +62,7 @@ const attempts = computed(() => list("attempts"));
           </p>
           <p class="dialog-meta">
             {{ runStatusLabel(String(detail.run_status)) }} ·
-            started {{ new Date(String(detail.started_at)).toLocaleString() }}
+            started {{ formatDateTime(String(detail.started_at), timezone) }}
             <span v-if="detail.workflow_version"> · version {{ detail.workflow_version }}</span>
           </p>
           <p v-if="runDiffers" class="dialog-meta">
@@ -114,7 +117,7 @@ const attempts = computed(() => list("attempts"));
           </p>
           <p class="dialog-meta">
             {{ jobStateLabel(String(detail.state)) }} ·
-            {{ new Date(String(detail.created_at)).toLocaleString() }} ·
+            submitted {{ formatDateTime(String(detail.created_at), timezone) }} ·
             {{ qualityLabel(String(detail.quality)) }}
           </p>
           <p v-if="text('interval_amount') !== text('full_job_amount')" class="dialog-meta">
@@ -130,7 +133,10 @@ const attempts = computed(() => list("attempts"));
           </p>
 
           <h3>Where it ran</h3>
-          <ul class="step-list">
+          <p v-if="!resources.length" class="dialog-meta">
+            No evidence of where this ran was collected.
+          </p>
+          <ul v-else class="step-list">
             <li v-for="resource in resources" :key="String(resource.lifetime_id)">
               <span>{{ resource.machine_type || "Your Galaxy server" }}</span>
               <span>{{ capacityLabel([String(resource.capacity_relationship)]) }}</span>
@@ -144,9 +150,11 @@ const attempts = computed(() => list("attempts"));
           <h3>Attempts</h3>
           <ul class="step-list">
             <li v-for="attempt in attempts" :key="String(attempt.id)">
-              <span>{{ jobStateLabel(String(attempt.outcome)) }}</span>
+              <span>
+                {{ jobStateLabel(String(attempt.outcome)) }}{{ attempt.role === "repeat" ? " · repeat attempt" : "" }}
+              </span>
               <span v-if="attempt.tool_started_at">
-                {{ new Date(String(attempt.tool_started_at)).toLocaleString() }}
+                {{ formatDateTime(String(attempt.tool_started_at), timezone) }}
               </span>
               <span v-if="attempt.amount">{{ formatCost(attempt.amount as string) }}</span>
               <small v-else-if="attempts.length > 1">Shares the resource charge above</small>

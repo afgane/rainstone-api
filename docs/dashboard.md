@@ -45,6 +45,9 @@ total substituted for "what did I spend yesterday".
 | baseline infrastructure | Galaxy server cost, in a quieter section with its observed window |
 | `known_zero` | $0 extra compute · Used your Galaxy server |
 | `partial` / `unpriced` | Cost incomplete / Price unavailable, each with a reason |
+| `in_progress` | Still running, only for queued or running work |
+| `unavailable` | Cost data unavailable, for finished work whose evidence was not collected |
+| `not_started` | Not run yet, for new or paused work |
 | root invocation | Workflow run |
 | `ok` / `error` / scheduling states | Completed, Failed, and a run status derived from the run's executions |
 | `gcp_batch` / `kubernetes` | Dedicated cloud compute / Your Galaxy server, only where the resource relationship is established |
@@ -63,10 +66,26 @@ A workflow run's headline is its **run total**: the whole run, whatever period
 is selected. When the selected period covers only part of it, the period share
 is shown beside it rather than replacing it. The period selector scopes which
 runs are listed — runs that accrued cost inside it, plus runs that started
-inside it — and runs with unusable timing stay listed and marked.
+inside it. Tool runs whose cost evidence has no usable timing are left out of
+every period's totals, counts and rankings; the overview says how many there
+are and the tool runs page lists them in a separate, collapsed section.
 
 Opening a run leads with the run total and its completion and coverage status,
 then the tool steps, child workflows counted once, reused outputs and any steps
 still missing cost data. A tool run's detail leads with its own cost, an
 explanation in ordinary language, the resource it used (with a retry's shared
-charge stated once), and its attempts.
+charge stated once), and its attempts. Galaxy's record of an execution a
+provider also observed is not listed as a second attempt. The tool runs table
+calls a job's creation time **Submitted**, because Galaxy creates a job before
+it starts running.
+
+## Time and freshness
+
+Every date and time is shown in the report's timezone, not the browser's, so a
+run always appears under the day it is counted in. Report pages end with when
+collection last reached every source ("Collected through", marked stale when
+any source is) and, separately, when costs were calculated. The Galaxy server
+section shows when the server was actually observed, or says that no server
+observations are available; it never presents the selected period as observed
+coverage. An imported snapshot is labelled as such in the masthead, not as demo
+data.

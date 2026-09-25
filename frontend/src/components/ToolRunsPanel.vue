@@ -1,17 +1,21 @@
 <script setup lang="ts">
 import { Download } from "@lucide/vue";
-import type { Job } from "../api";
-import { capacityLabel, formatCost, jobStateLabel, qualityLabel } from "../vocabulary";
+import type { Job, Meta } from "../api";
+import {
+  capacityLabel, formatCost, formatDateTime, jobStateLabel, qualityLabel, undatedSentence,
+} from "../vocabulary";
 
-defineProps<{ jobs: Job[]; total: number; periodLabel: string }>();
-const emit = defineEmits<{ detail: [id: string]; sort: [field: string]; export: [] }>();
-
-function ran(job: Job): string {
-  return new Date(job.created_at).toLocaleString(undefined, {
-    dateStyle: "medium",
-    timeStyle: "short",
-  });
-}
+defineProps<{
+  jobs: Job[];
+  undatedJobs: Job[];
+  undated: Meta["undated"];
+  total: number;
+  periodLabel: string;
+  timezone: string;
+}>();
+const emit = defineEmits<{
+  detail: [id: string]; sort: [field: string]; export: []; "more-undated": [];
+}>();
 </script>
 
 <template>
@@ -29,7 +33,7 @@ function ran(job: Job): string {
         <thead>
           <tr>
             <th><button class="sort-button" @click="emit('sort', 'tool_id')">Tool</button></th>
-            <th><button class="sort-button" @click="emit('sort', 'created_at')">Started</button></th>
+            <th><button class="sort-button" @click="emit('sort', 'created_at')">Submitted</button></th>
             <th><button class="sort-button" @click="emit('sort', 'state')">Status</button></th>
             <th><button class="sort-button" @click="emit('sort', 'amount')">Cost</button></th>
             <th>Where it ran</th>
@@ -41,7 +45,7 @@ function ran(job: Job): string {
               <button class="link-button" @click="emit('detail', job.id)">{{ job.tool_name }}</button>
               <small>{{ job.tool_version || "Unversioned" }}</small>
             </td>
-            <td>{{ ran(job) }}</td>
+            <td>{{ formatDateTime(job.created_at, timezone) }}</td>
             <td>{{ jobStateLabel(job.state) }}</td>
             <td>
               <strong>{{ formatCost(job.amount) }}</strong>
@@ -52,5 +56,23 @@ function ran(job: Job): string {
         </tbody>
       </table>
     </div>
+    <details v-if="undated?.job_count" class="inline-details">
+      <summary>{{ undatedSentence(undated.job_count) }}</summary>
+      <p>
+        Their cost evidence has no time it can be placed at, so no period can claim them. They are
+        listed here for inspection only and are not part of the totals or the export.
+      </p>
+      <ul class="step-list">
+        <li v-for="job in undatedJobs" :key="job.id">
+          <button class="link-button" @click="emit('detail', job.id)">{{ job.tool_name }}</button>
+          <span>{{ jobStateLabel(job.state) }}</span>
+          <small>Submitted {{ formatDateTime(job.created_at, timezone) }} · {{ qualityLabel(job.quality) }}</small>
+        </li>
+      </ul>
+      <p v-if="undated.job_count > undatedJobs.length">
+        Showing {{ undatedJobs.length }} of {{ undated.job_count }}.
+        <button class="link-button" @click="emit('more-undated')">Show more</button>
+      </p>
+    </details>
   </section>
 </template>

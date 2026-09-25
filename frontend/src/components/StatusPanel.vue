@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import type { Freshness, Status } from "../api";
 import { diagnosticsUrl } from "../api";
+import { formatDateTime } from "../vocabulary";
 
-defineProps<{ status: Status | null; freshness: Freshness | null }>();
+defineProps<{ status: Status | null; freshness: Freshness | null; timezone: string }>();
 </script>
 
 <template>
@@ -47,7 +48,7 @@ defineProps<{ status: Status | null; freshness: Freshness | null }>();
         <tbody>
           <tr v-for="source in freshness?.sources || []" :key="source.source">
             <td>{{ source.source }}</td><td>{{ source.status }}</td>
-            <td>{{ source.last_success_at ? new Date(source.last_success_at).toLocaleString() : "never" }}</td>
+            <td>{{ source.last_success_at ? formatDateTime(source.last_success_at, timezone) : "never" }}</td>
           </tr>
         </tbody>
       </table>

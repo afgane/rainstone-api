@@ -26,7 +26,7 @@ from rainstone.adapters.contracts import ObservationBatch, SourceAdapter
 from rainstone.adapters.galaxy_db import GalaxyDatabaseAdapter, discover_capabilities
 from rainstone.adapters.gcp_batch import BatchCollector, BatchTarget, HttpGcpClient
 from rainstone.adapters.kubernetes import HttpKubernetesClient, KubernetesCollector
-from rainstone.baseline import BaselineProfile, classify_job
+from rainstone.baseline import BaselineProfile, classify_job, saved_policy_conflict
 from rainstone.catalog import parse_trusted_keys
 from rainstone.catalog import refresh as refresh_catalog
 from rainstone.config import Settings, get_settings
@@ -37,10 +37,11 @@ from rainstone.enrollment import read_evidence, source_engine, verify_enrollment
 from rainstone.ingestion import (
     apply_batch,
     read_cursor,
+    reclassify_baseline,
     record_failure,
     stable_id,
 )
-from rainstone.models import ExecutionAttempt, Job, Tenant
+from rainstone.models import DeploymentPolicy, ExecutionAttempt, Job, Tenant
 
 logger = logging.getLogger("rainstone.collector")
 
@@ -49,6 +50,10 @@ TERMINAL_STATES = {"ok", "error", "deleted", "deleting", "failed", "cancelled"}
 
 class CollectorLeaseUnavailable(RuntimeError):
     """Another collector already holds this instance's lease."""
+
+
+class BaselinePolicyConflict(RuntimeError):
+    """The configured baseline period disagrees with the one saved for its version."""
 
 
 def _lock_key(key: str) -> int:
@@ -108,7 +113,62 @@ def baseline_profile(settings: Settings) -> BaselineProfile | None:
         destinations=settings.baseline_destination_list,
         runners=settings.baseline_runner_list,
         assumptions={"unchanged_vm_size": True, "unchanged_vm_uptime": True},
+        effective_from=settings.baseline_effective_from,
+        effective_to=settings.baseline_effective_to,
     )
+
+
+def resolve_baseline_profile(
+    session: Session, tenant_id: uuid.UUID, settings: Settings
+) -> BaselineProfile | None:
+    """The configured profile, bounded by the period its policy version was saved with.
+
+    Collection and reclassification both classify through this, so neither can
+    apply a policy outside the period the other respects. A declared period is
+    saved with its version the first time it is seen; afterwards the saved
+    period governs even if configuration stops declaring one. A declared period
+    that disagrees with the saved one classifies nothing, because preferring
+    either would silently reprice history. With no period declared or saved,
+    the policy covers all time, which the baseline self-check reports.
+    """
+    profile = baseline_profile(settings)
+    if profile is None:
+        return None
+    saved = session.scalar(
+        select(DeploymentPolicy).where(
+            DeploymentPolicy.tenant_id == tenant_id, DeploymentPolicy.version == profile.version
+        )
+    )
+    if saved_policy_conflict(saved, settings):
+        return None
+    if saved is not None:
+        return replace(
+            profile, effective_from=saved.effective_from, effective_to=saved.effective_to
+        )
+    if profile.effective_from is not None and session.get(Tenant, tenant_id) is not None:
+        session.add(
+            DeploymentPolicy(
+                id=stable_id(str(tenant_id), "policy", profile.version),
+                tenant_id=tenant_id,
+                version=profile.version,
+                effective_from=profile.effective_from,
+                effective_to=profile.effective_to,
+                baseline_resource_ids=[profile.resource_uid],
+                assumptions=profile.assumptions,
+                evidence="Declared by the RAINSTONE_BASELINE_* configuration.",
+            )
+        )
+        session.flush()
+    return profile
+
+
+def baseline_transform(
+    profile: BaselineProfile | None,
+) -> Callable[[ObservationBatch], ObservationBatch]:
+    def classify(batch: ObservationBatch) -> ObservationBatch:
+        return replace(batch, jobs=tuple(classify_job(job, profile) for job in batch.jobs))
+
+    return classify
 
 
 def batch_targets(
@@ -296,7 +356,6 @@ def build_collector(settings: Settings | None = None) -> Collector:
     """Wire the sources this deployment is configured to observe."""
     settings = settings or get_settings()
     sources: list[ScheduledSource] = []
-    profile = baseline_profile(settings)
 
     if settings.galaxy_source_url is not None:
         galaxy_engine = source_engine(settings)
@@ -312,11 +371,8 @@ def build_collector(settings: Settings | None = None) -> Collector:
             verify_enrollment(
                 session, settings, capabilities, read_evidence(settings, capabilities)
             )
-
-        def classify(batch: ObservationBatch) -> ObservationBatch:
-            return replace(
-                batch, jobs=tuple(classify_job(job, profile) for job in batch.jobs)
-            )
+            profile = resolve_baseline_profile(session, tenant_id_for(settings, session), settings)
+            session.commit()
 
         sources.append(
             ScheduledSource(
@@ -327,7 +383,7 @@ def build_collector(settings: Settings | None = None) -> Collector:
                     statement_timeout=settings.galaxy_statement_timeout,
                 ),
                 interval_seconds=settings.collect_interval_seconds,
-                transform=classify,
+                transform=baseline_transform(profile),
             )
         )
 
@@ -388,6 +444,35 @@ def build_collector(settings: Settings | None = None) -> Collector:
             "and enable the execution observers this deployment uses"
         )
     return Collector(settings, sources)
+
+
+def reclassify(settings: Settings | None = None) -> dict:
+    """Entry point for `rainstone reclassify-baseline`.
+
+    Holds the collector's lease, so it never writes facts beside a running
+    collector, and recalculates once so reports reflect the corrected facts.
+    """
+    settings = settings or get_settings()
+    with CollectorLease(application_engine, settings.collector_lease_key), Session(
+        application_engine
+    ) as session:
+        tenant_id = tenant_id_for(settings, session)
+        conflict = saved_policy_conflict(
+            session.scalar(select(DeploymentPolicy).where(
+                DeploymentPolicy.tenant_id == tenant_id,
+                DeploymentPolicy.version == settings.baseline_policy_version,
+            )),
+            settings,
+        )
+        if conflict:
+            # Without a usable profile every baseline link would be removed.
+            raise BaselinePolicyConflict(conflict)
+        counts = reclassify_baseline(
+            session, tenant_id, resolve_baseline_profile(session, tenant_id, settings)
+        )
+        revision = calculate_tenant(session, tenant_id, reason="baseline reclassification")
+        session.commit()
+        return {**counts, "revision_id": str(revision.id)}
 
 
 def run(settings: Settings | None = None, *, cycles: int | None = None) -> list[dict]:

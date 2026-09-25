@@ -26,6 +26,22 @@ export function measureExplanation(basis: string): string {
   return basis === "allocated" ? ALLOCATION_EXPLANATION : PRIMARY_EXPLANATION;
 }
 
+/**
+ * Dates in the report's timezone, never the browser's, so a run and the day
+ * it is counted under always agree.
+ */
+export function formatDate(instant: string, timezone: string): string {
+  return new Date(instant).toLocaleDateString(undefined, { dateStyle: "medium", timeZone: timezone });
+}
+
+export function formatDateTime(instant: string, timezone: string): string {
+  return new Date(instant).toLocaleString(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+    timeZone: timezone,
+  });
+}
+
 /** Readable money. Details keep the exact decimal string. */
 export function formatCost(amount: string | null | undefined): string {
   if (amount === null || amount === undefined || amount === "") return "Not available";
@@ -89,6 +105,8 @@ const QUALITY: Record<string, string> = {
   partial: "Cost incomplete",
   unpriced: "Price unavailable",
   in_progress: "Still running",
+  unavailable: "Cost data unavailable",
+  not_started: "Not run yet",
 };
 
 export function qualityLabel(quality: string): string {
@@ -104,13 +122,22 @@ export function costExplanation(record: {
 }): string {
   if (record.quality === "known_zero") return EXISTING_SERVER_SENTENCE;
   if (record.quality === "unpriced") {
-    return "No published price covers this machine and region yet, so its cost is unavailable rather than zero.";
+    return "No published price covers this machine and region for when it ran, so its cost is unavailable rather than zero.";
   }
   if (record.quality === "partial") {
     return "Some evidence for this run is still missing, so the amount shown is a subtotal.";
   }
   if (record.quality === "in_progress") return "This work is still running, so its cost is provisional.";
+  if (record.quality === "unavailable") {
+    return "This run finished, but the evidence needed to cost it was not collected, so its cost is unavailable rather than zero.";
+  }
+  if (record.quality === "not_started") return "This work has not run, so there is no cost to show.";
   return record.reason || "Estimated from observed execution using public prices.";
+}
+
+/** Evidence a dated report leaves out because no period can hold it. */
+export function undatedSentence(count: number): string {
+  return `${pluralize(count, "tool run")} ${count === 1 ? "has" : "have"} no usable timing, so ${count === 1 ? "it is" : "they are"} left out of every period's totals.`;
 }
 
 export function coverageSentence(jobs: number, incomplete: number): string {
@@ -120,8 +147,8 @@ export function coverageSentence(jobs: number, incomplete: number): string {
 }
 
 /** Grammar that stays correct at one. */
-export function needsCostData(count: number): string {
-  return `${pluralize(count, "step")} still ${count === 1 ? "needs" : "need"} cost data`;
+export function needsCostData(count: number, noun = "step"): string {
+  return `${pluralize(count, noun)} still ${count === 1 ? "needs" : "need"} cost data`;
 }
 
 export function pluralize(count: number, singular: string, plural = `${singular}s`): string {

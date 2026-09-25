@@ -16,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from rainstone.adapters.contracts import (
+    GALAXY_RECORD_ATTEMPT_ID,
     NormalizedAttempt,
     NormalizedGap,
     NormalizedInvocation,
@@ -28,6 +29,8 @@ from rainstone.adapters.contracts import (
     NormalizedStateEvent,
     ObservationBatch,
 )
+from rainstone.baseline import TIMING_METHOD as BASELINE_TIMING
+from rainstone.baseline import BaselineProfile, classify_job
 from rainstone.costing import calculate_tenant
 from rainstone.models import (
     CapacityRelationship,
@@ -502,6 +505,83 @@ def record_failure(
     state.error = error[:2000]
     session.flush()
     return state
+
+
+def reclassify_baseline(
+    session: Session, tenant_id: uuid.UUID, profile: BaselineProfile | None
+) -> dict[str, int]:
+    """Re-apply the current baseline profile to retained Galaxy execution records.
+
+    Classification normally happens once, as Galaxy records arrive, so a profile
+    corrected later would otherwise never reach work already collected. Only
+    Galaxy's own records are reconsidered, and only for jobs whose placement no
+    provider observation already establishes. A link the profile no longer
+    covers is removed; its lifetime row stays, so earlier calculations that
+    priced it remain intact.
+    """
+    rows = session.execute(
+        select(Job, ExecutionAttempt)
+        .join(ExecutionAttempt, ExecutionAttempt.job_id == Job.id)
+        .where(
+            Job.tenant_id == tenant_id,
+            ExecutionAttempt.source_attempt_id == GALAXY_RECORD_ATTEMPT_ID,
+        )
+        .order_by(Job.source_id)
+    ).all()
+    placed_by_provider = set(session.scalars(
+        select(ExecutionAttempt.job_id)
+        .join(LifetimeAttempt, LifetimeAttempt.attempt_id == ExecutionAttempt.id)
+        .join(ResourceLifetime, LifetimeAttempt.lifetime_id == ResourceLifetime.id)
+        .join(Job, ExecutionAttempt.job_id == Job.id)
+        .where(Job.tenant_id == tenant_id, ResourceLifetime.timing_method != BASELINE_TIMING)
+    ))
+    counts = {"examined": 0, "added": 0, "removed": 0, "placed_by_provider": 0}
+    for job, attempt in rows:
+        counts["examined"] += 1
+        if job.id in placed_by_provider:
+            counts["placed_by_provider"] += 1
+            continue
+        links = session.scalars(
+            select(LifetimeAttempt)
+            .join(ResourceLifetime, LifetimeAttempt.lifetime_id == ResourceLifetime.id)
+            .where(
+                LifetimeAttempt.attempt_id == attempt.id,
+                ResourceLifetime.timing_method == BASELINE_TIMING,
+            )
+        ).all()
+        record = NormalizedAttempt(
+            job_source_id=job.source_id,
+            source_attempt_id=attempt.source_attempt_id,
+            runner=attempt.runner,
+            outcome=attempt.outcome,
+            tool_started_at=attempt.tool_started_at,
+            tool_finished_at=attempt.tool_finished_at,
+            correlation="galaxy_record",
+        )
+        classified = classify_job(
+            NormalizedJob(
+                source_id=job.source_id,
+                owner_source_id="",
+                tool_id=job.tool_id,
+                state=job.state,
+                created_at=job.created_at,
+                updated_at=job.updated_at,
+                runner=job.runner,
+                destination=job.destination,
+                resource_hints=job.resource_hints or {},
+                attempts=(record,),
+            ),
+            profile,
+        ).attempts[0]
+        if classified.lifetimes and not links:
+            upsert_attempt(session, tenant_id, job.id, classified)
+            counts["added"] += 1
+        elif not classified.lifetimes and links:
+            for link in links:
+                session.delete(link)
+            counts["removed"] += 1
+    session.flush()
+    return counts
 
 
 def _fixture_lifetimes(data: list[dict]) -> tuple[NormalizedLifetime, ...]:
