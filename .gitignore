@@ -8,3 +8,7 @@ frontend/node_modules/
 frontend/dist/
 playwright-report/
 test-results/
+
+# Working files: notes, dumps and anything else the project itself
+# is not meant to carry.
+ea-no-commit/
